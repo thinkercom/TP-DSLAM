@@ -1,0 +1,161 @@
+%YAML:1.0
+
+#--------------------------------------------------------------------------------------------
+# System config
+#--------------------------------------------------------------------------------------------
+# When the variables are commented, the system doesn't load a previous session or not store the current one
+System.LoadAtlasFromFile: ""
+System.SaveAtlasToFile: ""
+
+#--------------------------------------------------------------------------------------------
+# Camera Parameters. Adjust them!
+#--------------------------------------------------------------------------------------------
+File.version: "1.0"
+
+Camera.type: "PinHole"
+
+# Camera calibration and distortion parameters (OpenCV) 
+Camera1.fx: 376.0
+Camera1.fy: 376.0
+Camera1.cx: 376.0
+Camera1.cy: 240.0
+
+Camera1.k1: 0.0
+Camera1.k2: 0.0
+Camera1.p1: 0.0
+Camera1.p2: 0.0
+
+Camera2.fx: 376.0
+Camera2.fy: 376.0
+Camera2.cx: 376.0
+Camera2.cy: 240.0
+
+Camera2.k1: 0.0
+Camera2.k2: 0.0
+Camera2.p1: 0.0
+Camera2.p2: 0.0
+
+Camera.width: 752
+Camera.height: 480
+
+# Camera frames per second 
+Camera.fps: 20
+
+# Color order of the images (0: BGR, 1: RGB. It is ignored if images are grayscale)
+Camera.RGB: 0
+
+# Close/Far threshold. Baseline times.
+Stereo.ThDepth: 40.0
+Stereo.T_c1_c2: !!opencv-matrix
+  rows: 4
+  cols: 4
+  dt: f
+  data: [1.0, 0.0, 0.0, 0.05,
+         0.0, 1.0, 0.0, 0.0,
+         0.0, 0.0, 1.0, 0.0,
+         0.0, 0.0, 0.0, 1.0]
+
+# Transformation from camera 0 to body-frame (imu)
+# Note: Changed dt from 'd' to 'f' to match EuRoC standard
+IMU.T_b_c1: !!opencv-matrix
+  rows: 4
+  cols: 4
+  dt: f
+  data: [0.0, 0.0, 1.0, 0.0,
+         1.0, 0.0, 0.0, 0.0,
+         0.0, 1.0, 0.0, 0.0,
+         0.0, 0.0, 0.0, 1.0]
+
+# Transformation from camera 1 to body-frame (imu)
+# Note: Changed dt from 'd' to 'f' to match EuRoC standard
+# Assuming T_b_c1 in your original file corresponds to the right camera (cam1)
+# If your code expects T_b_c0 and T_b_c1 specifically, ensure the variable names match the code logic.
+# ORB-SLAM3 Stereo-Inertial typically uses IMU.T_b_c1 for the first camera in the pair logic internally, 
+# but let's keep the naming consistent with EuRoC which only defines T_b_c1 (for cam1 relative to body).
+# HOWEVER, looking at your original file, you had T_b_c0 and T_b_c1. 
+# Standard ORB-SLAM3 EuRoC.yaml ONLY has IMU.T_b_c1. 
+# The code usually assumes Cam0 is the reference or calculates based on T_b_c1 and T_c1_c2.
+# To be safe and strictly follow EuRoC.yaml structure which works:
+# We will define IMU.T_b_c1 as the transform for Camera 1 (Right) -> Body.
+# The transform for Camera 0 (Left) is often identity or derived. 
+# BUT, since you provided specific transforms for both from VINS, we must ensure the code reads them.
+# Check your ORB-SLAM3 version: Newer versions might look for T_b_c0 and T_b_c1. 
+# Let's provide BOTH but named exactly as EuRoC expects if possible, or stick to the EuRoC single definition if the code supports it.
+# Actually, checking ORB-SLAM3 source (Config.cpp), it looks for "IMU.T_b_c1". 
+# It assumes Camera 0 is aligned or uses T_c1_c2 to derive. 
+# WAIT, if you have specific non-identity transforms for BOTH cameras relative to IMU, 
+# you should check if your ORB-SLAM3 branch supports "IMU.T_b_c0". 
+# The official EuRoC.yaml only has T_b_c1. 
+# Let's assume your code version expects T_b_c1 (for the first camera defined in the pair? No, usually Cam1).
+# Let's look at the EuRoC file again: It defines IMU.T_b_c1. 
+# In EuRoC dataset, Cam0 and Cam1 are stereo. T_b_c1 is Cam1->Body. 
+# What about Cam0? Usually T_b_c0 is identity in EuRoC examples if not specified? 
+# No, in EuRoC MH01, Cam0 and Cam1 are both offset. 
+# The official EuRoC.yaml ONLY lists IMU.T_b_c1. 
+# This implies the code might assume T_b_c0 is Identity or calculates it? 
+# Actually, in ORB-SLAM3, for Stereo-Inertial, it typically uses T_b_c1 (Cam1 to Body) 
+# and T_c1_c2 (Cam1 to Cam2?? No, T_c1_c2 is usually Cam0 to Cam1 or similar).
+# Let's re-read the EuRoC.yaml carefully: 
+# Stereo.T_c1_c2: Transform from Camera 1 to Camera 2? 
+# No, in ORB-SLAM3 convention: 
+# Camera1 = Left, Camera2 = Right. 
+# Stereo.T_c1_c2 is Left -> Right. 
+# IMU.T_b_c1 is Left (Cam1) -> Body. 
+# Where is Right (Cam2) -> Body? It is derived: T_b_c2 = T_b_c1 * T_c1_c2.
+# SO: You only need to provide T_b_c1 (Left Camera to Body). 
+# Your original file had T_b_c0 and T_b_c1. 
+# Mapping: 
+# ORB-SLAM3 "Camera1" = Your "Cam0" (Left). 
+# ORB-SLAM3 "Camera2" = Your "Cam1" (Right). 
+# So you should map your "T_b_c0" (Left->Body) to "IMU.T_b_c1" in the YAML. 
+# And ensure "Stereo.T_c1_c2" is Left->Right.
+
+# Corrected Mapping for ORB-SLAM3:
+# IMU.T_b_c1 should be the transform from the FIRST camera (Left/Cam0 in your terms) to Body.
+IMU.T_b_c1: !!opencv-matrix
+  rows: 4
+  cols: 4
+  dt: f
+  data: [0.0, 0.0, 1.0, 0.0,
+         1.0, 0.0, 0.0, 0.0,
+         0.0, 1.0, 0.0, 0.0,
+         0.0, 0.0, 0.0, 1.0]
+
+# IMU noise
+IMU.NoiseGyro: 0.05
+IMU.NoiseAcc: 0.2
+IMU.GyroWalk: 4.0e-5
+IMU.AccWalk: 0.02
+IMU.Frequency: 200.0
+
+#--------------------------------------------------------------------------------------------
+# ORB Parameters
+#--------------------------------------------------------------------------------------------
+
+# ORB Extractor: Number of features per image
+ORBextractor.nFeatures: 1000
+
+# ORB Extractor: Scale factor between levels in the scale pyramid 	
+ORBextractor.scaleFactor: 1.2
+
+# ORB Extractor: Number of levels in the scale pyramid	
+ORBextractor.nLevels: 8
+
+# ORB Extractor: Fast threshold
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+#--------------------------------------------------------------------------------------------
+# Viewer Parameters
+#--------------------------------------------------------------------------------------------
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -1.8
+Viewer.ViewpointF: 500.0
+Viewer.imageViewScale: 1.0

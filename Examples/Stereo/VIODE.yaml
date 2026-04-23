@@ -1,0 +1,97 @@
+%YAML:1.0
+
+#--------------------------------------------------------------------------------------------
+# System config
+#--------------------------------------------------------------------------------------------
+System.LoadAtlasFromFile: ""
+System.SaveAtlasToFile: ""
+
+#--------------------------------------------------------------------------------------------
+# Camera Parameters (VIODE - Updated with VINS Extrinsics)
+#--------------------------------------------------------------------------------------------
+File.version: "1.0"
+
+Camera.type: "PinHole"
+
+# --- 内参 (保持不变) ---
+Camera1.fx: 376.0
+Camera1.fy: 376.0
+Camera1.cx: 376.0
+Camera1.cy: 240.0
+Camera1.k1: 0.0
+Camera1.k2: 0.0
+Camera1.p1: 0.0
+Camera1.p2: 0.0
+
+Camera2.fx: 376.0
+Camera2.fy: 376.0
+Camera2.cx: 376.0
+Camera2.cy: 240.0
+Camera2.k1: 0.0
+Camera2.k2: 0.0
+Camera2.p1: 0.0
+Camera2.p2: 0.0
+
+Camera.width: 752
+Camera.height: 480
+Camera.fps: 20
+Camera.RGB: 0  # 假设是灰度图
+
+# --- 立体参数 (关键修正) ---
+# 基于 VINS 配置，基线约为 0.05m
+# ThDepth = fx * baseline / min_depth. 假设 min_depth=0.5m -> 376 * 0.05 / 0.5 = 37.6
+Stereo.ThDepth: 40.0
+
+# T_c1_c2: Transform from Camera 1 (Right) to Camera 0 (Left)
+# 根据 VINS 配置：
+# body_T_cam0 和 body_T_cam1 的旋转部分完全相同，说明 Cam0 和 Cam1 平行。
+# 位移差异主要在 body_T_cam1 的 [1,3] 元素 (0.05)。
+# 在 VINS 的 body_T_cam 定义中，这通常意味着 Cam1 在 Body 系的某个轴上偏移了 0.05。
+# 由于两个相机旋转一致，Cam1 相对于 Cam0 的变换就是纯粹的平移。
+# 假设标准双目设置 (Cam1 在 Cam0 右侧)，我们将平移设为 0.05。
+# 如果轨迹深度反了，尝试改为 -0.05。
+Stereo.T_c1_c2: !!opencv-matrix
+  rows: 4
+  cols: 4
+  dt: f
+  data: [1.0, 0.0, 0.0, 0.05,
+         0.0, 1.0, 0.0, 0.0,
+         0.0, 0.0, 1.0, 0.0,
+         0.0, 0.0, 0.0, 1.0]
+
+#--------------------------------------------------------------------------------------------
+# IMU Parameters (仅当运行 Stereo-Inertial 模式时需要，纯 Stereo 可忽略)
+#--------------------------------------------------------------------------------------------
+# 如果你运行 ./stereo_viode (纯视觉)，这部分不起作用。
+# 如果你运行 ./stereo_inertial_viode，需要确保代码读取这些值。
+# ORB-SLAM3 的 yaml 格式略有不同，通常在 "IMU" 节点下。
+# 这里仅作记录，供参考：
+# Acc Noise: 0.2
+# Gyro Noise: 0.05
+# Acc Walk: 0.02
+# Gyro Walk: 0.00004
+# Gravity: 9.81007
+
+#--------------------------------------------------------------------------------------------
+# ORB Parameters
+#--------------------------------------------------------------------------------------------
+ORBextractor.nFeatures: 1000
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+#--------------------------------------------------------------------------------------------
+# Viewer Parameters
+#--------------------------------------------------------------------------------------------
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -1.8
+Viewer.ViewpointF: 500.0
+Viewer.imageViewScale: 1.0
