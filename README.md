@@ -1,7 +1,7 @@
 # TP-DSLAM: Robust Dynamic SLAM with Temporal-Semantic Fusion and Geometric Gating
 
 [![License](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Ubuntu_20.04-orange.svg)](https://ubuntu.com/)
+[![Platform](https://img.shields.io/badge/platform-Ubuntu_22.04-orange.svg)](https://ubuntu.com/)
 [![Language](https://img.shields.io/badge/language-C++-blue.svg)](https://isocpp.org/)
 
 **TP-DSLAM** is a robust visual SLAM system designed for dynamic environments. By integrating **Temporal-Semantic Fusion** and a **Geometric Disparity Gating** mechanism, our system effectively mitigates the interference of dynamic objects (e.g., walking persons, moving vehicles) and maintains high-precision localization even under challenging conditions like fast motion and lighting variations.
