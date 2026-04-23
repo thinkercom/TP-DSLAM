@@ -52,7 +52,6 @@ We have tested the system on **Ubuntu 20.04**. Ensure you have the following dep
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/yourusername/TP-DSLAM.git
     cd TP-DSLAM
     ```
 
