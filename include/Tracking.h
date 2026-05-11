@@ -234,7 +234,7 @@ protected:
     void ResetFrameIMU();
 
     // add by cmt
-    // === 新增：停止标志位 ===
+    // stop flag
     bool mbStop;
     bool mbStopped;
     std::mutex mMutexStop;
@@ -293,13 +293,11 @@ protected:
     MapDrawer* mpMapDrawer;
     bool bStepByStep;
 
-    // Add by cmt: 存储动态先验图
+    // Store dynamic prior map
     cv::Mat mDynamicPriorMap;
 
-    // ================== ADD BY CMT START ==================
-    // 动态检测器指针
+    // Dynamic detector pointer
     std::unique_ptr<DynamicDetector> mpDynamicDetector;
-    // ================== ADD BY CMT END ==================
 
     //Atlas
     Atlas* mpAtlas;
@@ -387,14 +385,22 @@ protected:
 public:
     cv::Mat mImRight;
     // add by cmt
-    // === 新增：线程停止控制 ===
+    // === Thread stop control ===
     void RequestStop();
     bool isStopped();
-    void Release(); // 可选：如果需要恢复运行
+    void Release();
 private:
-    // Add by cmt: 动态先验处理函数声明
+    // Dynamic prior processing functions
     void AssignDynamicPriorToFrame(ORB_SLAM3::Frame &F, const cv::Mat &priorMap);
     void FuseReliabilityScores(ORB_SLAM3::Frame &F);
+    
+    // Unified dynamic detection and filtering functions
+    void ProcessDynamicPrior(const cv::Mat &inputImg, cv::Mat &dynamicPriorMap, bool runInference);
+    void FilterDynamicKeypoints(ORB_SLAM3::Frame &F, const cv::Mat &dynamicPriorMap, float hardDropThreshold);
+    void RebuildFrameGrid(ORB_SLAM3::Frame &F, const cv::Mat &imGray);
+    void ApplyPoseSmoothing(ORB_SLAM3::Frame &F, Sophus::SE3f &lastSmoothedTwc, 
+                           Eigen::Vector3f &lastLinearVel, Eigen::Vector3f &lastAngularVel,
+                           bool &firstSmooth, double dt);
 };
 
 } //namespace ORB_SLAM

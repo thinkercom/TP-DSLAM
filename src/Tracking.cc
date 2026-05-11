@@ -46,7 +46,7 @@ namespace ORB_SLAM3
                                                                                                                                               mnInitialFrameId(0), mbCreatedMap(false), mnFirstFrameId(0), mpCamera2(nullptr),
                                                                                                                                               mpLastKeyFrame(static_cast<KeyFrame *>(NULL)), mbStop(false), mbStopped(true)
     {
-        mbStopped = false; // 创建后实际上是准备运行的
+        mbStopped = false; // Ready to run after creation
         mbStop = false;
         // Load camera parameters from settings file
         if (settings)
@@ -131,14 +131,13 @@ namespace ORB_SLAM3
         vdTrackTotal_ms.clear();
 #endif
 
-        // ================== ADD BY CMT START ==================
-        // 初始化动态检测器 (YOLO)
+        // Initialize dynamic detector (YOLO)
         try
         {
-            // 【重要】请确保这个路径是你电脑上 .onnx 文件的绝对路径或相对路径
+            // Ensure this path points to the .onnx file on your machine
             std::string model_path = "yolo11n-seg.onnx";
 
-            // 参数: 模型路径, 置信度阈值, 分数阈值, NMS阈值, 输入尺寸
+            // Parameters: model path, confidence threshold, score threshold, NMS threshold, input size
             mpDynamicDetector = std::make_unique<DynamicDetector>(model_path, 0.4f, 0.25f, 0.45f, 640);
 
             std::cout << "[INFO] DynamicDetector initialized successfully with model: " << model_path << std::endl;
@@ -147,10 +146,9 @@ namespace ORB_SLAM3
         {
             std::cerr << "[ERROR] Failed to initialize DynamicDetector: " << e.what() << std::endl;
             std::cerr << "[WARN] Running in static SLAM mode (no dynamic detection)." << std::endl;
-            // unique_ptr 默认为 nullptr，这里显式重置以确保安全
+            // unique_ptr defaults to nullptr, explicitly reset for safety
             mpDynamicDetector.reset();
         }
-        // ================== ADD BY CMT END ==================
     }
 
 #ifdef REGISTER_TIMES
@@ -1502,7 +1500,7 @@ namespace ORB_SLAM3
 
     Sophus::SE3f Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat &imRectRight, const double &timestamp, string filename)
     {
-        // --- 0. Stop 检查 ---
+        // --- 0. Stop check ---
         {
             unique_lock<mutex> lock(mMutexStop);
             if (mbStop)
@@ -1512,7 +1510,7 @@ namespace ORB_SLAM3
             }
         }
 
-        // --- 1. 图像预处理 (保持高效) ---
+        // --- 1. Image preprocessing ---
         mImGray = imRectLeft;
         cv::Mat imGrayRight = imRectRight;
         mImRight = imRectRight;
@@ -1529,7 +1527,7 @@ namespace ORB_SLAM3
         }
         cv::Mat imLeftOriginal = imRectLeft;
 
-        // --- 2. 构建当前帧 ---
+        // --- 2. Build current frame ---
         if (mSensor == System::STEREO && !mpCamera2)
             mCurrentFrame = Frame(mImGray, imGrayRight, timestamp, mpORBextractorLeft, mpORBextractorRight, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera);
         else if (mSensor == System::STEREO && mpCamera2)
@@ -1539,16 +1537,11 @@ namespace ORB_SLAM3
         else if (mSensor == System::IMU_STEREO && mpCamera2)
             mCurrentFrame = Frame(mImGray, imGrayRight, timestamp, mpORBextractorLeft, mpORBextractorRight, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera, mpCamera2, mTlr, &mLastFrame, *mpImuCalib);
 
-        // ================== HIGH-PERFORMANCE DYNAMIC HANDLING ==================
-
-        // 参数配置
+        // --- 3. Dynamic object handling ---
         constexpr float HARD_DROP_THRESHOLD = 0.60f;
-        constexpr int SKIP_FRAMES = 2; // 每3帧推理一次
+        constexpr int SKIP_FRAMES = 2;
 
-        // 静态变量 (只初始化一次，无锁开销)
         static int frame_counter = 0;
-        static cv::Mat cached_prior_map; // 缓存掩码 (避免重复分配)
-        static bool cache_valid = false;
         static bool first_run = true;
 
         if (first_run)
@@ -1557,250 +1550,31 @@ namespace ORB_SLAM3
             first_run = false;
         }
 
-        bool run_inference = (mpDynamicDetector != nullptr) && (frame_counter % (SKIP_FRAMES + 1) == 0);
+        bool run_inference = (frame_counter % (SKIP_FRAMES + 1) == 0);
         frame_counter++;
 
-        // --- A. 高效掩码更新 (零分配策略) ---
-        if (mpDynamicDetector != nullptr)
+        // Process dynamic prior using unified function
+        cv::Mat inputImg = imLeftOriginal.empty() ? mImGray : imLeftOriginal;
+        ProcessDynamicPrior(inputImg, mDynamicPriorMap, run_inference);
+
+        // Filter dynamic keypoints using unified function
+        if (!mDynamicPriorMap.empty() && mDynamicPriorMap.size() == mImGray.size())
         {
-            if (run_inference)
-            {
-                cv::Mat inputImg;
-                if (imLeftOriginal.empty())
-                {
-                    cv::cvtColor(mImGray, inputImg, cv::COLOR_GRAY2BGR);
-                }
-                else
-                {
-                    if (imLeftOriginal.channels() == 3 && !mbRGB)
-                        inputImg = imLeftOriginal;
-                    else if (imLeftOriginal.channels() == 3 && mbRGB)
-                        cv::cvtColor(imLeftOriginal, inputImg, cv::COLOR_RGB2BGR);
-                    else
-                        cv::cvtColor(mImGray, inputImg, cv::COLOR_GRAY2BGR);
-                }
-
-                bool success = false;
-                if (!inputImg.empty())
-                    success = mpDynamicDetector->inferDynamicPrior(inputImg, mDynamicPriorMap);
-
-                if (success && !mDynamicPriorMap.empty())
-                {
-                    // 原地膨胀 (避免 clone)
-                    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-                    cv::dilate(mDynamicPriorMap, mDynamicPriorMap, kernel, cv::Point(-1, -1), 2);
-
-                    // 确保尺寸匹配 (原地 resize 如果需要)
-                    if (mDynamicPriorMap.size() != mImGray.size())
-                    {
-                        cv::resize(mDynamicPriorMap, mDynamicPriorMap, mImGray.size(), 0, 0, cv::INTER_LINEAR);
-                    }
-
-                    // 更新缓存 (copyTo 复用内存，不重新分配)
-                    mDynamicPriorMap.copyTo(cached_prior_map);
-                    cache_valid = true;
-
-#ifdef DEBUG_LOGS
-                    double maxVal;
-                    cv::minMaxLoc(mDynamicPriorMap, nullptr, &maxVal);
-                    if (mCurrentFrame.mnId % 50 == 0)
-                        std::cout << "[INFO] Infer OK. Max: " << maxVal << std::endl;
-#endif
-                }
-                else
-                {
-                    // 推理失败，尝试使用缓存
-                    if (cache_valid)
-                        cached_prior_map.copyTo(mDynamicPriorMap);
-                    else
-                        mDynamicPriorMap = cv::Mat::zeros(mImGray.size(), CV_32F);
-                }
-            }
-            else
-            {
-                // 非推理帧：直接使用缓存 (零拷贝，只是引用或快速复制)
-                if (cache_valid && !cached_prior_map.empty())
-                {
-                    // 如果尺寸没变，直接 copyTo (极快)
-                    if (cached_prior_map.size() == mImGray.size())
-                    {
-                        cached_prior_map.copyTo(mDynamicPriorMap);
-                    }
-                    else
-                    {
-                        cv::resize(cached_prior_map, mDynamicPriorMap, mImGray.size(), 0, 0, cv::INTER_LINEAR);
-                    }
-                }
-                else
-                {
-                    mDynamicPriorMap = cv::Mat::zeros(mImGray.size(), CV_32F);
-                }
-            }
-        }
-        else
-        {
-            mDynamicPriorMap = cv::Mat::zeros(mImGray.size(), CV_32F);
-            cache_valid = false;
+            FilterDynamicKeypoints(mCurrentFrame, mDynamicPriorMap, HARD_DROP_THRESHOLD);
+            RebuildFrameGrid(mCurrentFrame, mImGray);
         }
 
-        // --- B. 极速筛选 (指针访问 + 提前退出) ---
-        // 如果掩码无效或全零，直接跳过过滤，节省 CPU
-        bool has_dynamic_info = (!mDynamicPriorMap.empty() && mDynamicPriorMap.size() == mImGray.size());
-
-        // 简单的全零检查 (可选，稍微耗时，视情况开启)
-        // if (has_dynamic_info && cv::countNonZero(mDynamicPriorMap > 0.1f) == 0) has_dynamic_info = false;
-
-        if (has_dynamic_info)
-        {
-            const int total_N = mCurrentFrame.N;
-            const int rows = mDynamicPriorMap.rows;
-            const int cols = mDynamicPriorMap.cols;
-
-            // 预分配
-            std::vector<cv::KeyPoint> vNewKeys;
-            vNewKeys.reserve(total_N);
-            std::vector<cv::KeyPoint> vNewKeysUn;
-            vNewKeysUn.reserve(total_N);
-            std::vector<float> vNewURight;
-            vNewURight.reserve(total_N);
-            std::vector<float> vNewDepth;
-            vNewDepth.reserve(total_N);
-            std::vector<MapPoint *> vNewMPs;
-            vNewMPs.reserve(total_N);
-            std::vector<bool> vNewOutlier;
-            vNewOutlier.reserve(total_N);
-            std::vector<int> vKeepIndices;
-            vKeepIndices.reserve(total_N);
-
-            // 自定义向量
-            std::vector<float> vNewDynPrior;
-            vNewDynPrior.reserve(total_N);
-            std::vector<float> vNewGeoScore;
-            vNewGeoScore.reserve(total_N);
-            std::vector<float> vNewStaticRel;
-            vNewStaticRel.reserve(total_N);
-
-            int dropped_count = 0;
-
-            for (int i = 0; i < total_N; ++i)
-            {
-                const cv::KeyPoint &kp = mCurrentFrame.mvKeysUn[i];
-                int x = static_cast<int>(kp.pt.x);
-                int y = static_cast<int>(kp.pt.y);
-
-                float prob = 0.0f;
-                // ✅ 指针访问：比 at<> 快 30%-50%
-                if (x >= 0 && x < cols && y >= 0 && y < rows)
-                {
-                    const float *row_ptr = mDynamicPriorMap.ptr<float>(y);
-                    prob = row_ptr[x];
-                }
-
-                if (prob > HARD_DROP_THRESHOLD)
-                {
-                    dropped_count++;
-                    continue;
-                }
-
-                vKeepIndices.push_back(i);
-                vNewKeys.push_back(mCurrentFrame.mvKeys[i]);
-                vNewKeysUn.push_back(kp);
-
-                // 快速边界检查避免 branch misprediction (分支预测失败)
-                vNewURight.push_back(i < (int)mCurrentFrame.mvuRight.size() ? mCurrentFrame.mvuRight[i] : -1.0f);
-                vNewDepth.push_back(i < (int)mCurrentFrame.mvDepth.size() ? mCurrentFrame.mvDepth[i] : -1.0f);
-                vNewMPs.push_back(i < (int)mCurrentFrame.mvpMapPoints.size() ? mCurrentFrame.mvpMapPoints[i] : nullptr);
-                vNewOutlier.push_back(i < (int)mCurrentFrame.mvbOutlier.size() ? mCurrentFrame.mvbOutlier[i] : false);
-
-                vNewDynPrior.push_back(i < (int)mCurrentFrame.mvDynPrior.size() ? mCurrentFrame.mvDynPrior[i] : prob);
-                vNewGeoScore.push_back(i < (int)mCurrentFrame.mvGeoScore.size() ? mCurrentFrame.mvGeoScore[i] : 1.0f);
-                vNewStaticRel.push_back(i < (int)mCurrentFrame.mvStaticReliability.size() ? mCurrentFrame.mvStaticReliability[i] : 1.0f);
-            }
-
-            int new_N = static_cast<int>(vNewKeys.size());
-
-#ifdef DEBUG_LOGS
-            if (mCurrentFrame.mnId % 50 == 0)
-                std::cout << "[STATS] Frame " << mCurrentFrame.mnId << " | Drop: " << dropped_count << " | Keep: " << new_N << std::endl;
-#endif
-
-            // 只有确实删除了点才更新 (避免无意义的内存拷贝)
-            if (new_N > 0 && new_N < total_N)
-            {
-                mCurrentFrame.mvKeys = std::move(vNewKeys);
-                mCurrentFrame.mvKeysUn = std::move(vNewKeysUn);
-                mCurrentFrame.mvuRight = std::move(vNewURight);
-                mCurrentFrame.mvDepth = std::move(vNewDepth);
-                mCurrentFrame.mvpMapPoints = std::move(vNewMPs);
-                mCurrentFrame.mvbOutlier = std::move(vNewOutlier);
-                mCurrentFrame.mvDynPrior = std::move(vNewDynPrior);
-                mCurrentFrame.mvGeoScore = std::move(vNewGeoScore);
-                mCurrentFrame.mvStaticReliability = std::move(vNewStaticRel);
-                mCurrentFrame.N = new_N;
-
-                // 描述子更新
-                if (!mCurrentFrame.mDescriptors.empty())
-                {
-                    cv::Mat newDesc(new_N, mCurrentFrame.mDescriptors.cols, mCurrentFrame.mDescriptors.type());
-                    for (int k = 0; k < new_N; ++k)
-                        mCurrentFrame.mDescriptors.row(vKeepIndices[k]).copyTo(newDesc.row(k));
-                    mCurrentFrame.mDescriptors = std::move(newDesc);
-                }
-
-                // 重建网格 (标准流程，无法省略)
-                for (int r = 0; r < FRAME_GRID_COLS; ++r)
-                    for (int c = 0; c < FRAME_GRID_ROWS; ++c)
-                    {
-                        mCurrentFrame.mGrid[r][c].clear();
-                        if (mCurrentFrame.Nleft != -1)
-                            mCurrentFrame.mGridRight[r][c].clear();
-                    }
-
-                float minX = mCurrentFrame.mnMinX, minY = mCurrentFrame.mnMinY;
-                float invW = mCurrentFrame.mfGridElementWidthInv, invH = mCurrentFrame.mfGridElementHeightInv;
-
-                for (int i = 0; i < new_N; ++i)
-                {
-                    const cv::KeyPoint &kp = mCurrentFrame.mvKeysUn[i];
-                    int posX = static_cast<int>((kp.pt.x - minX) * invW);
-                    int posY = static_cast<int>((kp.pt.y - minY) * invH);
-                    if (posX >= 0 && posX < FRAME_GRID_COLS && posY >= 0 && posY < FRAME_GRID_ROWS)
-                    {
-                        if (mCurrentFrame.Nleft == -1 || i < mCurrentFrame.Nleft)
-                            mCurrentFrame.mGrid[posX][posY].push_back(i);
-                        else
-                            mCurrentFrame.mGridRight[posX][posY].push_back(i - mCurrentFrame.Nleft);
-                    }
-                }
-            }
-        }
-
-        // --- C. 兜底检查 (保持不变，确保安全) ---
+        // Safety check: ensure N matches vector sizes
         if (mCurrentFrame.N != (int)mCurrentFrame.mvKeysUn.size())
         {
-            // ... (保持原有兜底逻辑，略) ...
             int safe_N = (int)mCurrentFrame.mvKeysUn.size();
             mCurrentFrame.N = safe_N;
-            // 简单截断防止崩溃
             if ((int)mCurrentFrame.mvKeys.size() > safe_N)
                 mCurrentFrame.mvKeys.resize(safe_N);
             if ((int)mCurrentFrame.mDescriptors.rows > safe_N)
                 mCurrentFrame.mDescriptors = mCurrentFrame.mDescriptors.rowRange(0, safe_N).clone();
-            // 网格重建...
-            for (int r = 0; r < FRAME_GRID_COLS; ++r)
-                for (int c = 0; c < FRAME_GRID_ROWS; ++c)
-                    mCurrentFrame.mGrid[r][c].clear();
-            float minX = mCurrentFrame.mnMinX, minY = mCurrentFrame.mnMinY;
-            float invW = mCurrentFrame.mfGridElementWidthInv, invH = mCurrentFrame.mfGridElementHeightInv;
-            for (int i = 0; i < safe_N; ++i)
-            {
-                int posX = static_cast<int>((mCurrentFrame.mvKeysUn[i].pt.x - minX) * invW);
-                int posY = static_cast<int>((mCurrentFrame.mvKeysUn[i].pt.y - minY) * invH);
-                if (posX >= 0 && posX < FRAME_GRID_COLS && posY >= 0 && posY < FRAME_GRID_ROWS)
-                    mCurrentFrame.mGrid[posX][posY].push_back(i);
-            }
+            RebuildFrameGrid(mCurrentFrame, mImGray);
         }
-        // ========================================================================
 
         mCurrentFrame.mNameFile = filename;
         mCurrentFrame.mnDataset = mnNumDataset;
@@ -1816,18 +1590,17 @@ namespace ORB_SLAM3
 
     Sophus::SE3f Tracking::GrabImageRGBD(const cv::Mat &imRGB, const cv::Mat &imD, const double &timestamp, string filename)
     {
-        // add by cmt
+        // --- 0. Stop check ---
         {
             unique_lock<mutex> lock(mMutexStop);
             if (mbStop)
             {
                 mbStopped = true;
-                // 可选：打印日志确认已退出
-                // cout << "[Tracking] Stop requested in GrabImageRGBD. Returning identity." << endl;
-                return Sophus::SE3f(); // 返回一个空的/单位位姿，立即退出函数
+                return Sophus::SE3f();
             }
         }
-        // --- 1. 预处理 ---
+
+        // --- 1. Image preprocessing ---
         cv::Mat imGrayOriginal = imRGB;
         mImGray = imRGB;
         if (mImGray.channels() == 3)
@@ -1849,375 +1622,99 @@ namespace ORB_SLAM3
         if ((fabs(mDepthMapFactor - 1.0f) > 1e-5) || imDepth.type() != CV_32F)
             imDepth.convertTo(imDepth, CV_32F, mDepthMapFactor);
 
-        // ================== ADD FPS COUNTER START ==================
-        // 1. 定义静态变量用于统计 (只初始化一次)
-        static double total_time_ms = 0.0;  // 总耗时(毫秒)
-        static int frame_count = 0;         // 帧计数器
-        static double last_timestamp = 0.0; // 上一帧时间戳，用于计算实际流逝时间
-
-        // 2. 记录函数开始时间 (用于计算算法耗时)
+        // FPS counter variables
+        static double total_time_ms = 0.0;
+        static int frame_count = 0;
+        static double last_timestamp = 0.0;
         std::chrono::steady_clock::time_point t_start = std::chrono::steady_clock::now();
-        // ================== ADD FPS COUNTER END ==================
 
-        // --- 2. 构建当前帧 ---
+        // --- 2. Build current frame ---
         if (mSensor == System::RGBD)
             mCurrentFrame = Frame(mImGray, imDepth, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera);
         else if (mSensor == System::IMU_RGBD)
             mCurrentFrame = Frame(mImGray, imDepth, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera, &mLastFrame, *mpImuCalib);
 
-        // ================== ADD BY CMT START (Safe Hard Drop + Rebuild Grid - NO GUI) ==================
+        // --- 3. Dynamic object handling ---
+        constexpr float HARD_DROP_THRESHOLD = 0.60f;
+        constexpr int SKIP_FRAMES = 2;
 
-        const float HIGH_DYNAMIC_THRESHOLD = 0.75f;
-        const int SKIP_FRAMES = 3;
-        static int yolo_frame_counter = 0;
-        static cv::Mat last_valid_mask;
-        static bool first_debug = true;
+        static int frame_counter = 0;
+        static bool first_run = true;
 
-        if (first_debug)
+        if (first_run)
         {
-            std::cout << "[DEBUG] Grid Size Check: " << sizeof(mCurrentFrame.mGrid) << " bytes" << std::endl;
-            first_debug = false;
+            std::cout << "[TP-DSLAM] RGB-D Mode: Threshold=" << HARD_DROP_THRESHOLD << ", Skip=" << SKIP_FRAMES << std::endl;
+            first_run = false;
         }
 
-        if (mpDynamicDetector != nullptr)
+        bool run_inference = (frame_counter % (SKIP_FRAMES + 1) == 0);
+        frame_counter++;
+
+        // Process dynamic prior using unified function
+        cv::Mat inputImg = imGrayOriginal.empty() ? mImGray : imGrayOriginal;
+        ProcessDynamicPrior(inputImg, mDynamicPriorMap, run_inference);
+
+        // Filter dynamic keypoints using unified function
+        if (!mDynamicPriorMap.empty() && mDynamicPriorMap.size() == mImGray.size())
         {
-            bool run_inference = (yolo_frame_counter % (SKIP_FRAMES + 1) == 0);
-            yolo_frame_counter++;
-            // w/o Temporal Fusion
-            // bool run_inference = true;
-
-            // --- 1. YOLO 推理与掩码生成 ---
-            if (run_inference && imGrayOriginal.channels() >= 3)
-            {
-                cv::Mat inputImgForYOLO;
-                if (mbRGB)
-                    cv::cvtColor(imGrayOriginal, inputImgForYOLO, cv::COLOR_RGB2BGR);
-                else
-                    inputImgForYOLO = imGrayOriginal.clone();
-
-                if (!inputImgForYOLO.empty() && mpDynamicDetector->inferDynamicPrior(inputImgForYOLO, mDynamicPriorMap))
-                {
-                    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-                    cv::dilate(mDynamicPriorMap, mDynamicPriorMap, kernel, cv::Point(-1, -1), 1);
-                    last_valid_mask = mDynamicPriorMap.clone();
-                }
-                else
-                {
-                    mDynamicPriorMap = cv::Mat::zeros(mImGray.size(), CV_32F);
-                }
-            }
-            else
-            {
-                if (!last_valid_mask.empty())
-                    mDynamicPriorMap = last_valid_mask.clone();
-                else
-                    mDynamicPriorMap = cv::Mat::zeros(mImGray.size(), CV_32F);
-            }
-
-            // --- 2. 时序平滑处理 ---
-            if (!mDynamicPriorMap.empty())
-            {
-                static cv::Mat dynamic_history_accumulator;
-                if (dynamic_history_accumulator.empty() || dynamic_history_accumulator.size() != mDynamicPriorMap.size())
-                {
-                    dynamic_history_accumulator = cv::Mat::zeros(mDynamicPriorMap.size(), CV_32F);
-                }
-
-                double current_mean = cv::mean(mDynamicPriorMap)[0];
-                double hist_mean = cv::mean(dynamic_history_accumulator)[0];
-                double global_diff = std::abs(current_mean - hist_mean);
-
-                float global_decay_factor = 0.7f;
-                if (global_diff > 0.15f)
-                    global_decay_factor = 0.4f;
-                else if (global_diff < 0.05f)
-                    global_decay_factor = 0.8f;
-
-                dynamic_history_accumulator = dynamic_history_accumulator * global_decay_factor +
-                                              mDynamicPriorMap * (1.0f - global_decay_factor);
-
-                const float smooth_threshold = 0.60f;
-                for (int r = 0; r < mDynamicPriorMap.rows; r++)
-                {
-                    const float *hist_ptr = dynamic_history_accumulator.ptr<float>(r);
-                    float *prior_ptr = mDynamicPriorMap.ptr<float>(r);
-                    for (int c = 0; c < mDynamicPriorMap.cols; c++)
-                    {
-                        float hist_val = hist_ptr[c];
-                        float curr_val = prior_ptr[c];
-                        if (hist_val > smooth_threshold)
-                            prior_ptr[c] = std::max(curr_val, hist_val);
-                        else if (hist_val < 0.25f && curr_val > 0.50f)
-                            prior_ptr[c] = curr_val * 0.2f;
-                        else
-                            prior_ptr[c] = hist_val * 0.6f + curr_val * 0.4f;
-
-                        if (prior_ptr[c] < 0.0f)
-                            prior_ptr[c] = 0.0f;
-                        if (prior_ptr[c] > 1.0f)
-                            prior_ptr[c] = 1.0f;
-                    }
-                }
-            }
-
-            // --- 3. 【核心】软权重筛选 + 几何验证 (已修复作用域和冗余) ---
-            if (!mDynamicPriorMap.empty() && mDynamicPriorMap.size() == mImGray.size())
-            {
-                std::vector<cv::KeyPoint> vCleanKeys;
-                std::vector<float> vCleanWeights;
-                std::vector<float> vCleanURight;
-                std::vector<float> vCleanDepth;
-                std::vector<MapPoint *> vCleanMapPoints;
-                std::vector<bool> vCleanOutlier;
-                std::vector<int> vKeepIndices;
-
-                int total_count = mCurrentFrame.N;
-                float current_hard_thresh = 0.90f;
-
-                vCleanKeys.reserve(total_count);
-                vCleanWeights.reserve(total_count);
-                vKeepIndices.reserve(total_count);
-
-                const int maskRows = mDynamicPriorMap.rows;
-                const int maskCols = mDynamicPriorMap.cols;
-
-                // 单次遍历
-                for (int i = 0; i < total_count; ++i)
-                {
-                    if (i >= (int)mCurrentFrame.mvKeysUn.size())
-                        break;
-
-                    const cv::KeyPoint &kp = mCurrentFrame.mvKeysUn[i];
-                    int x = static_cast<int>(kp.pt.x);
-                    int y = static_cast<int>(kp.pt.y);
-
-                    float prob = 0.0f;
-                    if (x >= 0 && x < maskCols && y >= 0 && y < maskRows)
-                        prob = mDynamicPriorMap.at<float>(y, x);
-
-                    if (prob > current_hard_thresh)
-                        continue;
-
-                    // 计算基础权重 soft-weight Rejection
-                    float weight = 1.0f;
-                    if (prob > 0.8f)
-                        weight = 0.05f * std::exp(-5.0f * (prob - 0.8f));
-                    else if (prob > 0.5f)
-                        weight = 0.5f * (1.0f - (prob - 0.5f) / 0.3f);
-                    weight = std::max(0.01f, std::min(1.0f, weight));
-
-            // w/o Geometric Gating
-                    // 几何一致性检查 (邻域深度)
-                    if (i < (int)mCurrentFrame.mvDepth.size() && mCurrentFrame.mvDepth[i] > 0)
-                    {
-                        float current_depth = mCurrentFrame.mvDepth[i];
-                        float neighbor_sum = 0.0f;
-                        int neighbor_count = 0;
-                        float max_diff = 0.0f;
-                        int dx[4] = {-1, 1, 0, 0};
-                        int dy[4] = {0, 0, -1, 1};
-
-                        for (int k = 0; k < 4; ++k)
-                        {
-                            int nx = x + dx[k];
-                            int ny = y + dy[k];
-                            if (nx >= 0 && nx < mImGray.cols && ny >= 0 && ny < mImGray.rows)
-                            {
-                                float d = imDepth.at<float>(ny, nx);
-                                if (d > 0)
-                                {
-                                    neighbor_sum += d;
-                                    neighbor_count++;
-                                    float diff = std::abs(d - current_depth);
-                                    if (diff > max_diff)
-                                        max_diff = diff;
-                                }
-                            }
-                        }
-
-                        if (neighbor_count >= 2)
-                        {
-                            float avg_neighbor = neighbor_sum / neighbor_count;
-                            float ratio = current_depth / avg_neighbor;
-                            if ((ratio > 1.25f || ratio < 0.75f) && max_diff > 0.3f)
-                            {
-                                weight *= 0.2f;
-                                if (weight < 0.05f)
-                                    continue;
-                            }
-                        }
-                    }
-
-                    // 保存数据
-                    vCleanKeys.push_back(kp);
-                    vCleanWeights.push_back(weight);
-                    vKeepIndices.push_back(i);
-
-                    if (i < (int)mCurrentFrame.mvuRight.size())
-                        vCleanURight.push_back(mCurrentFrame.mvuRight[i]);
-                    else
-                        vCleanURight.push_back(-1.0f);
-
-                    if (i < (int)mCurrentFrame.mvDepth.size())
-                        vCleanDepth.push_back(mCurrentFrame.mvDepth[i]);
-                    else
-                        vCleanDepth.push_back(-1.0f);
-
-                    if (i < (int)mCurrentFrame.mvpMapPoints.size())
-                        vCleanMapPoints.push_back(mCurrentFrame.mvpMapPoints[i]);
-                    else
-                        vCleanMapPoints.push_back(nullptr);
-
-                    if (i < (int)mCurrentFrame.mvbOutlier.size())
-                        vCleanOutlier.push_back(mCurrentFrame.mvbOutlier[i]);
-                    else
-                        vCleanOutlier.push_back(false);
-                }
-
-                // 自适应回退警告 (不重跑，避免复杂逻辑，仅提示)
-                if (vCleanKeys.size() < 50)
-                {
-                    std::cout << "[WARN] Frame " << mCurrentFrame.mnId << " too few points (" << vCleanKeys.size() << ")." << std::endl;
-                }
-
-                // --- 应用更新 (只在 if 内部执行一次) ---
-                int new_count = static_cast<int>(vCleanKeys.size());
-
-                if (new_count > 0)
-                {
-                    mCurrentFrame.mvKeysUn = vCleanKeys;
-                    mCurrentFrame.mvDynamicWeights = vCleanWeights;
-                    mCurrentFrame.N = new_count;
-
-                    if (!vCleanURight.empty())
-                        mCurrentFrame.mvuRight = vCleanURight;
-                    if (!vCleanDepth.empty())
-                        mCurrentFrame.mvDepth = vCleanDepth;
-                    if (!vCleanMapPoints.empty())
-                        mCurrentFrame.mvpMapPoints = vCleanMapPoints;
-                    if (!vCleanOutlier.empty())
-                        mCurrentFrame.mvbOutlier = vCleanOutlier;
-
-                    // 更新描述子
-                    if (!mCurrentFrame.mDescriptors.empty())
-                    {
-                        cv::Mat newDesc(new_count, mCurrentFrame.mDescriptors.cols, mCurrentFrame.mDescriptors.type());
-                        for (int k = 0; k < new_count; ++k)
-                        {
-                            int srcIdx = vKeepIndices[k];
-                            mCurrentFrame.mDescriptors.row(srcIdx).copyTo(newDesc.row(k));
-                        }
-                        mCurrentFrame.mDescriptors = newDesc;
-                    }
-
-                    // 重建网格
-                    for (int i = 0; i < FRAME_GRID_COLS; i++)
-                        for (int j = 0; j < FRAME_GRID_ROWS; j++)
-                            mCurrentFrame.mGrid[i][j].clear();
-
-                    float minX = Frame::mbInitialComputations ? Frame::mnMinX : 0.0f;
-                    float maxX = Frame::mbInitialComputations ? Frame::mnMaxX : (float)mImGray.cols;
-                    float minY = Frame::mbInitialComputations ? Frame::mnMinY : 0.0f;
-                    float maxY = Frame::mbInitialComputations ? Frame::mnMaxY : (float)mImGray.rows;
-
-                    float stepX = (maxX - minX) / FRAME_GRID_COLS;
-                    float stepY = (maxY - minY) / FRAME_GRID_ROWS;
-
-                    for (int i = 0; i < new_count; i++)
-                    {
-                        const cv::KeyPoint &kp = mCurrentFrame.mvKeysUn[i];
-                        if (kp.pt.x < minX || kp.pt.x >= maxX || kp.pt.y < minY || kp.pt.y >= maxY)
-                            continue;
-
-                        int idxX = static_cast<int>((kp.pt.x - minX) / stepX);
-                        int idxY = static_cast<int>((kp.pt.y - minY) / stepY);
-
-                        if (idxX >= 0 && idxX < FRAME_GRID_COLS && idxY >= 0 && idxY < FRAME_GRID_ROWS)
-                            mCurrentFrame.mGrid[idxX][idxY].push_back(i);
-                    }
-
-                    if (mCurrentFrame.mnId % 50 == 0)
-                        std::cout << "[TP-DSLAM] Frame " << mCurrentFrame.mnId
-                                  << ": Kept " << new_count << "/" << total_count << std::endl;
-                }
-            }
+            FilterDynamicKeypoints(mCurrentFrame, mDynamicPriorMap, HARD_DROP_THRESHOLD);
+            RebuildFrameGrid(mCurrentFrame, mImGray);
         }
-        // <--- 这里结束了 if (mpDynamicDetector != nullptr)
 
-        // ================== 兜底检查与网格二次重建 ==================
+        // Safety check: ensure N matches vector sizes
         if (mCurrentFrame.N != (int)mCurrentFrame.mvKeysUn.size())
         {
-            std::cerr << "[FINAL SYNC] Fixing N! Old: " << mCurrentFrame.N << " New: " << mCurrentFrame.mvKeysUn.size() << std::endl;
             int safe_N = (int)mCurrentFrame.mvKeysUn.size();
             mCurrentFrame.N = safe_N;
-
-            if ((int)mCurrentFrame.mvpMapPoints.size() > safe_N)
-                mCurrentFrame.mvpMapPoints.resize(safe_N);
+            if ((int)mCurrentFrame.mvKeys.size() > safe_N)
+                mCurrentFrame.mvKeys.resize(safe_N);
             if ((int)mCurrentFrame.mDescriptors.rows > safe_N)
                 mCurrentFrame.mDescriptors = mCurrentFrame.mDescriptors.rowRange(0, safe_N).clone();
-            if ((int)mCurrentFrame.mvDepth.size() > safe_N)
-                mCurrentFrame.mvDepth.resize(safe_N);
-            if ((int)mCurrentFrame.mvbOutlier.size() > safe_N)
-                mCurrentFrame.mvbOutlier.resize(safe_N);
-
-            // 再次重建网格
-            for (int i = 0; i < FRAME_GRID_COLS; i++)
-                for (int j = 0; j < FRAME_GRID_ROWS; j++)
-                    mCurrentFrame.mGrid[i][j].clear();
-
-            float minX = Frame::mbInitialComputations ? Frame::mnMinX : 0.0f;
-            float maxX = Frame::mbInitialComputations ? Frame::mnMaxX : (float)mImGray.cols;
-            float minY = Frame::mbInitialComputations ? Frame::mnMinY : 0.0f;
-            float maxY = Frame::mbInitialComputations ? Frame::mnMaxY : (float)mImGray.rows;
-
-            float stepX = (maxX - minX) / FRAME_GRID_COLS;
-            float stepY = (maxY - minY) / FRAME_GRID_ROWS;
-
-            for (int i = 0; i < safe_N; i++)
-            {
-                const cv::KeyPoint &kp = mCurrentFrame.mvKeysUn[i];
-                if (kp.pt.x < minX || kp.pt.x >= maxX || kp.pt.y < minY || kp.pt.y >= maxY)
-                    continue;
-                int idxX = static_cast<int>((kp.pt.x - minX) / stepX);
-                int idxY = static_cast<int>((kp.pt.y - minY) / stepY);
-                if (idxX >= 0 && idxX < FRAME_GRID_COLS && idxY >= 0 && idxY < FRAME_GRID_ROWS)
-                    mCurrentFrame.mGrid[idxX][idxY].push_back(i);
-            }
+            RebuildFrameGrid(mCurrentFrame, mImGray);
         }
-        // ================== ADD BY CMT END ==================
 
         mCurrentFrame.mNameFile = filename;
         mCurrentFrame.mnDataset = mnNumDataset;
 
-        // ================== ADD FPS COUNTER (Part 2) ==================
-        // 3. 记录函数结束时间
+        Track();
+
+        // Apply pose smoothing using unified function
+        static Sophus::SE3f last_smoothed_Twc;
+        static Eigen::Vector3f last_linear_vel(0, 0, 0);
+        static Eigen::Vector3f last_angular_vel(0, 0, 0);
+        static bool first_smooth = true;
+        const double dt = 1.0 / 30.0;
+
+        if (mState == OK || mState == RECENTLY_LOST)
+        {
+            ApplyPoseSmoothing(mCurrentFrame, last_smoothed_Twc, last_linear_vel, last_angular_vel, first_smooth, dt);
+        }
+        else
+        {
+            first_smooth = true;
+            last_linear_vel.setZero();
+            last_angular_vel.setZero();
+        }
+
+        // FPS counter (AFTER Track() and pose smoothing)
         std::chrono::steady_clock::time_point t_end = std::chrono::steady_clock::now();
-
-        // 计算本帧处理耗时 (毫秒)
         double t_frame_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t_end - t_start).count();
-
-        // 累加统计
         total_time_ms += t_frame_ms;
         frame_count++;
 
-        // 4. 计算并打印 FPS (每 50 帧打印一次，防止日志刷屏)
-        // 使用实际时间戳间隔来计算更准确的实时 FPS
         double current_fps = 0.0;
         if (last_timestamp > 0.0)
         {
             double delta_time = timestamp - last_timestamp;
             if (delta_time > 0)
-            {
-                current_fps = 1.0 / delta_time; // 理论最大 FPS
-            }
+                current_fps = 1.0 / delta_time;
         }
         last_timestamp = timestamp;
 
-        // 每处理 50 帧输出一次统计信息
-        if (frame_count % 50 == 0)
+        if (frame_count % 100 == 0)
         {
             double avg_time_per_frame = total_time_ms / frame_count;
-            double calculated_fps = 1000.0 / avg_time_per_frame; // 平均 FPS
+            double calculated_fps = 1000.0 / avg_time_per_frame;
 
             std::cout << std::endl;
             std::cout << "=== PERFORMANCE STATS (RGB-D) ===" << std::endl;
@@ -2228,138 +1725,6 @@ namespace ORB_SLAM3
             std::cout << "Theoretical System FPS: " << current_fps << std::endl;
             std::cout << "Total Frames Processed: " << frame_count << std::endl;
             std::cout << "===============================" << std::endl;
-        }
-        // ================== END FPS MODIFICATION ==================
-
-        // ================== ADD DYNAMIC HANDLING METRIC ==================
-        // 1. 统计动态特征数量
-        // 策略：遍历所有提取到的特征点，检查其动态概率 (mvDynPrior)
-        int total_static_points = 0;
-        int total_dynamic_points = 0;
-        int filtered_points = 0; // 被剔除的点数
-
-        // 安全检查
-        if (!mCurrentFrame.mvDynPrior.empty())
-        {
-            for (size_t i = 0; i < mCurrentFrame.mvDynPrior.size(); i++)
-            {
-                float prob = mCurrentFrame.mvDynPrior[i]; // 注意：这里变量名可能需要根据实际对象调整
-                // 如果没有 mvDynPrior 成员，你需要检查 mCurrentFrame 是否有对应存储
-                // 或者直接检查 mDynamicPriorMap 在图像上的值
-
-                if (prob > 0.5f)
-                { // 阈值，认为是动态物体
-                    total_dynamic_points++;
-                    if (prob > 0.8f)
-                        filtered_points++; // 被你的算法过滤掉的点
-                }
-                else
-                {
-                    total_static_points++;
-                }
-            }
-        }
-
-        // 2. 计算动态处理比率
-        // 比率 = 被处理的动态点数 / 总点数
-        int total_points = total_static_points + total_dynamic_points;
-        float dynamic_handling_ratio = 0.0f;
-        if (total_points > 0)
-        {
-            dynamic_handling_ratio = (float)filtered_points / (float)total_points;
-        }
-
-        // 3. 打印日志
-        // 只在有动态物体时打印，减少日志量
-        if (total_dynamic_points > 10)
-        {
-            std::cout << "[DYNAMIC STATS] Frame " << mCurrentFrame.mnId
-                      << " | Static: " << total_static_points
-                      << " | Dynamic: " << total_dynamic_points
-                      << " | Filtered: " << filtered_points
-                      << " | Ratio: " << (dynamic_handling_ratio * 100.0f) << "%"
-                      << std::endl;
-        }
-        // ================== END DYNAMIC HANDLING METRIC ==================
-
-        Track();
-
-        // ================== ADD BY CMT START 可视化调试 + 位姿平滑 ==================
-        // --- 2. 高级位姿平滑 (带速度约束 + Slerp) ---
-        static Sophus::SE3f last_smoothed_Twc;
-        static Eigen::Vector3f last_linear_vel(0, 0, 0);
-        static Eigen::Vector3f last_angular_vel(0, 0, 0);
-        static bool first_smooth = true;
-
-        // 参数调整
-        const float alpha_pos = 0.3f;     // 位置平滑系数 (越小越平滑，但也越滞后)
-        const float alpha_rot = 0.3f;     // 旋转平滑系数
-        const float max_accel = 2.0f;     // 最大允许加速度 (m/s^2)，超过则视为异常
-        const float max_ang_accel = 3.0f; // 最大允许角加速度 (rad/s^2)
-
-        // 假设帧率为 30fps (根据你的实际相机修改 dt)
-        const double dt = 1.0 / 30.0;
-
-        if (mState == OK || mState == RECENTLY_LOST)
-        {
-            Sophus::SE3f current_Twc = mCurrentFrame.GetPose();
-
-            if (first_smooth)
-            {
-                last_smoothed_Twc = current_Twc;
-                first_smooth = false;
-            }
-            else
-            {
-                // 1. 计算当前帧的“原始”速度 (基于平滑后的上一帧)
-                Sophus::SE3f delta_raw = last_smoothed_Twc.inverse() * current_Twc;
-                Eigen::Vector3f trans_raw = delta_raw.translation();
-                Eigen::Vector3f rot_vec_raw = delta_raw.so3().log();
-
-                Eigen::Vector3f vel_trans_raw = trans_raw / dt;
-                Eigen::Vector3f vel_ang_raw = rot_vec_raw / dt;
-
-                // 2. 【关键】速度约束检查 (Clamping Velocity)
-                // 如果速度突变太大，强制限制速度，防止轨迹飞出去
-                Eigen::Vector3f vel_trans_clamped = vel_trans_raw;
-                Eigen::Vector3f vel_ang_clamped = vel_ang_raw;
-
-                if (vel_trans_raw.norm() > last_linear_vel.norm() + max_accel * dt)
-                    vel_trans_clamped = last_linear_vel.normalized() * (last_linear_vel.norm() + max_accel * dt);
-
-                if (vel_ang_raw.norm() > last_angular_vel.norm() + max_ang_accel * dt)
-                    vel_ang_clamped = last_angular_vel.normalized() * (last_angular_vel.norm() + max_ang_accel * dt);
-
-                // 3. 应用平滑后的速度计算新位姿
-                Eigen::Vector3f t_new = last_smoothed_Twc.translation() + vel_trans_clamped * dt * alpha_pos + trans_raw * (1.0f - alpha_pos);
-
-                // 旋转部分使用 Slerp，但基于被截断的角度
-                Eigen::Quaternionf q_last(last_smoothed_Twc.unit_quaternion());
-                // 从截断的角速度重构旋转增量
-                Eigen::AngleAxisf aa_clamped(vel_ang_clamped.norm() * dt, vel_ang_clamped.normalized());
-                Eigen::Quaternionf q_delta(aa_clamped);
-                Eigen::Quaternionf q_target = q_last * q_delta;
-
-                // 确保最短路径
-                if (q_last.dot(q_target) < 0.0f)
-                    q_target.coeffs() = -q_target.coeffs();
-
-                Eigen::Quaternionf q_new = q_last.slerp(alpha_rot, q_target);
-
-                // 4. 更新状态
-                Sophus::SE3f smoothed_Twc(Sophus::SO3f(q_new), t_new);
-                mCurrentFrame.SetPose(smoothed_Twc.inverse());
-
-                last_smoothed_Twc = smoothed_Twc;
-                last_linear_vel = vel_trans_clamped;
-                last_angular_vel = vel_ang_clamped;
-            }
-        }
-        else
-        {
-            first_smooth = true;
-            last_linear_vel.setZero();
-            last_angular_vel.setZero();
         }
 
         return mCurrentFrame.GetPose();
@@ -2402,61 +1767,38 @@ namespace ORB_SLAM3
 
         if (mState == NO_IMAGES_YET)
             t0 = timestamp;
-        // ================== ADD BY CMT START ==================
 
-        // 1. 运行动态检测器
-        if (mpDynamicDetector != nullptr)
+        // Dynamic object handling
+        constexpr float HARD_DROP_THRESHOLD = 0.60f;
+        constexpr int SKIP_FRAMES = 2;
+
+        static int frame_counter = 0;
+        static bool first_run = true;
+
+        if (first_run)
         {
-            // 【重要】DynamicDetector 需要 BGR 彩色图像
-            // 如果当前是灰度图 (mImGray)，需要转换
-            cv::Mat inputImg;
-            if (mImGray.channels() == 1)
-            {
-                cv::cvtColor(mImGray, inputImg, cv::COLOR_GRAY2BGR);
-            }
-            else
-            {
-                inputImg = mImGray.clone(); // 如果已经是彩色 (比如 RGB-D 模式)
-            }
-
-            // 调用 inferDynamicPrior 直接获取动态先验图
-            // 输出: mDynamicPriorMap (CV_32FC1, 范围 [0.1, 0.95], 尺寸同 inputImg)
-            if (!mpDynamicDetector->inferDynamicPrior(inputImg, mDynamicPriorMap))
-            {
-                std::cerr << "[WARNING] DynamicDetector inference failed for this frame." << std::endl;
-                mDynamicPriorMap = cv::Mat::zeros(mImGray.size(), CV_32F); // 失败则全设为静态
-            }
-
-            // 【可选】调试：打印统计信息
-            /*
-            float mean_val, max_val;
-            int dyn_count;
-            mpDynamicDetector->getPriorMapStats(mDynamicPriorMap, mean_val, max_val, dyn_count);
-            std::cout << "[DEBUG] Dyn Prior - Mean: " << mean_val << ", Max: " << max_val << ", Pixels>0.5: " << dyn_count << std::endl;
-            */
-        }
-        else
-        {
-            // 如果没有加载检测器，默认全静态
-            mDynamicPriorMap = cv::Mat::zeros(mImGray.size(), CV_32F);
+            std::cout << "[TP-DSLAM] Monocular Mode: Threshold=" << HARD_DROP_THRESHOLD << ", Skip=" << SKIP_FRAMES << std::endl;
+            first_run = false;
         }
 
-        // 2. 分配动态先验到 Frame
+        bool run_inference = (frame_counter % (SKIP_FRAMES + 1) == 0);
+        frame_counter++;
+
+        // Process dynamic prior using unified function
+        ProcessDynamicPrior(mImGray, mDynamicPriorMap, run_inference);
+
+        // Assign dynamic prior to frame
         if (!mDynamicPriorMap.empty() && mDynamicPriorMap.size() == mImGray.size())
-        {
             AssignDynamicPriorToFrame(mCurrentFrame, mDynamicPriorMap);
-        }
         else
         {
-            // 尺寸不匹配或为空，创建一个全 0 的矩阵防止崩溃
             cv::Mat dummyPrior = cv::Mat::zeros(mImGray.size(), CV_32F);
             AssignDynamicPriorToFrame(mCurrentFrame, dummyPrior);
         }
 
-        // 3. 融合分数 (几何 + 语义)
+        // Fuse reliability scores
         FuseReliabilityScores(mCurrentFrame);
 
-        // ================== ADD BY CMT END ==================
         mCurrentFrame.mNameFile = filename;
         mCurrentFrame.mnDataset = mnNumDataset;
 
@@ -3141,26 +2483,26 @@ namespace ORB_SLAM3
                 return;
             }
             // ================== ADD SUCCESS RATE TRACKING ==================
-            // 1. 定义静态计数器
+            // 1. Define static counters
             static int total_frames_processed = 0;
             static int successful_frames = 0;
 
-            // 2. 更新计数器
+            // 2. Update counters
             total_frames_processed++;
 
-            // 3. 判断当前帧是否跟踪成功
-            // 策略：只要状态是 OK 或者 RECENTLY_LOST (系统还在尝试恢复，未完全崩溃)，都算作"未丢失"
-            // 严格模式：只有 mState == OK 才算成功
-            // 这里我们用宽松模式统计"未丢失率"
+            // 3. Determine if current frame tracking is successful
+            // Strategy: OK or RECENTLY_LOST (system still trying to recover) counts as "not lost"
+            // Strict mode: only mState == OK counts as success
+            // Here we use relaxed mode to track "not lost rate"
             if (mState == OK || mState == RECENTLY_LOST)
             {
                 successful_frames++;
             }
 
-            // 4. 计算成功率并打印
+            // 4. Calculate and print success rate
             float success_rate = (float)successful_frames / (float)total_frames_processed;
 
-            // 每 100 帧打印一次
+            // Print every 100 frames
             if (total_frames_processed % 100 == 0)
             {
                 std::cout << "[STATS] Tracking Success Rate: "
@@ -3168,7 +2510,6 @@ namespace ORB_SLAM3
                           << " (" << successful_frames << "/" << total_frames_processed << ")"
                           << std::endl;
 
-                // 如果你想在系统完全 Lost 时强制记录，可以在这里加逻辑
                 if (mState == LOST)
                 {
                     std::cout << "[CRITICAL] System State: LOST! Final Success Rate before reset: "
@@ -3214,7 +2555,7 @@ namespace ORB_SLAM3
             }
         }
 #endif
-        // add by cmt
+        // Tracking statistics
         static int nTotalFrames = 0;
         static int nLostFrames = 0;
 
@@ -5022,11 +4363,11 @@ if (mState == LOST) {
 #endif
 
     // -------------------------------------------------------------------
-    // Add by cmt: 将动态先验图映射到帧的特征点上
+    // Map dynamic prior map to frame feature points
     // -------------------------------------------------------------------
     void Tracking::AssignDynamicPriorToFrame(ORB_SLAM3::Frame &F, const cv::Mat &priorMap)
     {
-        // 1. 如果先验图为空，设默认值
+        // 1. If prior map is empty, set default values
         if (priorMap.empty())
         {
             if (F.mvDynPrior.size() == F.N)
@@ -5034,34 +4375,33 @@ if (mState == LOST) {
             return;
         }
 
-        // 【重要】移除了对 F.mImGray 或 F.mnRows 的依赖，因为 Frame 类中可能未存储原始图像
-        // 我们假设调用者 (Tracking::GrabImage...) 保证了 priorMap 的尺寸与生成该 Frame 的图像尺寸一致
+        // Note: We assume the caller ensures priorMap size matches the image size used to generate this Frame
 
         int mapRows = priorMap.rows;
         int mapCols = priorMap.cols;
 
-        // 2. 遍历所有特征点
+        // 2. Iterate through all feature points
         for (int i = 0; i < F.N; ++i)
         {
-            // 获取关键点坐标 (使用 mvKeys，对应原始图像)
+            // Get keypoint coordinates (using mvKeys, corresponding to original image)
             cv::Point2f pt = F.mvKeys[i].pt;
             int x = static_cast<int>(pt.x);
             int y = static_cast<int>(pt.y);
 
-            // 边界保护：直接使用 priorMap 的尺寸进行检查
+            // Boundary protection: check against priorMap dimensions
             if (x >= 0 && x < mapCols && y >= 0 && y < mapRows)
             {
                 float prob = 0.0f;
 
-                // 根据 priorMap 的类型读取数据
+                // Read data based on priorMap type
                 if (priorMap.type() == CV_32F)
                     prob = priorMap.at<float>(y, x);
                 else if (priorMap.type() == CV_8U)
                     prob = static_cast<float>(priorMap.at<uchar>(y, x)) / 255.0f;
                 else
-                    prob = 0.1f; // 未知类型默认低动态概率
+                    prob = 0.1f; // Unknown type defaults to low dynamic probability
 
-                // 限制概率在 [0, 1]
+                // Clamp probability to [0, 1]
                 if (prob < 0.0f)
                     prob = 0.0f;
                 if (prob > 1.0f)
@@ -5071,27 +4411,265 @@ if (mState == LOST) {
             }
             else
             {
-                // 越界点设为默认低动态概率
-                // 这通常意味着关键点提取时的图像尺寸与 priorMap 尺寸不一致
-                // 或者关键点位于图像边缘之外（极少见）
+                // Out-of-bounds points set to default low dynamic probability
+                // This usually means image size during keypoint extraction doesn't match priorMap size
                 F.mvDynPrior[i] = 0.1f;
-
-                // 【可选调试】如果大量点越界，说明尺寸真的不匹配
-                // if(i == 0) std::cerr << "[Warning] KeyPoint (" << x << "," << y
-                //                      << ") out of PriorMap bounds (" << mapCols << "x" << mapRows << ")" << std::endl;
             }
 
-            // 初始化几何分数为 1.0
+            // Initialize geometric score to 1.0
             F.mvGeoScore[i] = 1.0f;
         }
     }
 
     // -------------------------------------------------------------------
-    // Add by cmt: 融合动态概率和几何分数，生成最终可信度
+    // Unified dynamic prior processing with caching and skip-frame optimization
+    // -------------------------------------------------------------------
+    void Tracking::ProcessDynamicPrior(const cv::Mat &inputImg, cv::Mat &dynamicPriorMap, bool runInference)
+    {
+        static cv::Mat cached_prior_map;
+        static bool cache_valid = false;
+
+        if (mpDynamicDetector == nullptr)
+        {
+            dynamicPriorMap = cv::Mat::zeros(inputImg.size(), CV_32F);
+            return;
+        }
+
+        if (runInference)
+        {
+            cv::Mat bgrImg;
+            if (inputImg.channels() == 1)
+                cv::cvtColor(inputImg, bgrImg, cv::COLOR_GRAY2BGR);
+            else if (inputImg.channels() == 3 && mbRGB)
+                cv::cvtColor(inputImg, bgrImg, cv::COLOR_RGB2BGR);
+            else
+                bgrImg = inputImg;
+
+            bool success = false;
+            if (!bgrImg.empty())
+                success = mpDynamicDetector->inferDynamicPrior(bgrImg, dynamicPriorMap);
+
+            if (success && !dynamicPriorMap.empty())
+            {
+                cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+                cv::dilate(dynamicPriorMap, dynamicPriorMap, kernel, cv::Point(-1, -1), 2);
+
+                if (dynamicPriorMap.size() != inputImg.size())
+                    cv::resize(dynamicPriorMap, dynamicPriorMap, inputImg.size(), 0, 0, cv::INTER_LINEAR);
+
+                dynamicPriorMap.copyTo(cached_prior_map);
+                cache_valid = true;
+            }
+            else
+            {
+                if (cache_valid)
+                    cached_prior_map.copyTo(dynamicPriorMap);
+                else
+                    dynamicPriorMap = cv::Mat::zeros(inputImg.size(), CV_32F);
+            }
+        }
+        else
+        {
+            if (cache_valid && !cached_prior_map.empty())
+            {
+                if (cached_prior_map.size() == inputImg.size())
+                    cached_prior_map.copyTo(dynamicPriorMap);
+                else
+                    cv::resize(cached_prior_map, dynamicPriorMap, inputImg.size(), 0, 0, cv::INTER_LINEAR);
+            }
+            else
+            {
+                dynamicPriorMap = cv::Mat::zeros(inputImg.size(), CV_32F);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Unified dynamic keypoint filtering with pointer access optimization
+    // -------------------------------------------------------------------
+    void Tracking::FilterDynamicKeypoints(ORB_SLAM3::Frame &F, const cv::Mat &dynamicPriorMap, float hardDropThreshold)
+    {
+        if (dynamicPriorMap.empty())
+            return;
+
+        const int total_N = F.N;
+        const int rows = dynamicPriorMap.rows;
+        const int cols = dynamicPriorMap.cols;
+
+        std::vector<cv::KeyPoint> vNewKeys;
+        vNewKeys.reserve(total_N);
+        std::vector<cv::KeyPoint> vNewKeysUn;
+        vNewKeysUn.reserve(total_N);
+        std::vector<float> vNewURight;
+        vNewURight.reserve(total_N);
+        std::vector<float> vNewDepth;
+        vNewDepth.reserve(total_N);
+        std::vector<MapPoint *> vNewMPs;
+        vNewMPs.reserve(total_N);
+        std::vector<bool> vNewOutlier;
+        vNewOutlier.reserve(total_N);
+        std::vector<int> vKeepIndices;
+        vKeepIndices.reserve(total_N);
+        std::vector<float> vNewDynPrior;
+        vNewDynPrior.reserve(total_N);
+        std::vector<float> vNewGeoScore;
+        vNewGeoScore.reserve(total_N);
+        std::vector<float> vNewStaticRel;
+        vNewStaticRel.reserve(total_N);
+
+        int dropped_count = 0;
+
+        for (int i = 0; i < total_N; ++i)
+        {
+            const cv::KeyPoint &kp = F.mvKeysUn[i];
+            int x = static_cast<int>(kp.pt.x);
+            int y = static_cast<int>(kp.pt.y);
+
+            float prob = 0.0f;
+            if (x >= 0 && x < cols && y >= 0 && y < rows)
+            {
+                const float *row_ptr = dynamicPriorMap.ptr<float>(y);
+                prob = row_ptr[x];
+            }
+
+            if (prob > hardDropThreshold)
+            {
+                dropped_count++;
+                continue;
+            }
+
+            vKeepIndices.push_back(i);
+            vNewKeys.push_back(F.mvKeys[i]);
+            vNewKeysUn.push_back(kp);
+            vNewURight.push_back(i < (int)F.mvuRight.size() ? F.mvuRight[i] : -1.0f);
+            vNewDepth.push_back(i < (int)F.mvDepth.size() ? F.mvDepth[i] : -1.0f);
+            vNewMPs.push_back(i < (int)F.mvpMapPoints.size() ? F.mvpMapPoints[i] : nullptr);
+            vNewOutlier.push_back(i < (int)F.mvbOutlier.size() ? F.mvbOutlier[i] : false);
+            vNewDynPrior.push_back(i < (int)F.mvDynPrior.size() ? F.mvDynPrior[i] : prob);
+            vNewGeoScore.push_back(i < (int)F.mvGeoScore.size() ? F.mvGeoScore[i] : 1.0f);
+            vNewStaticRel.push_back(i < (int)F.mvStaticReliability.size() ? F.mvStaticReliability[i] : 1.0f);
+        }
+
+        int new_N = static_cast<int>(vNewKeys.size());
+
+        if (new_N > 0 && new_N < total_N)
+        {
+            F.mvKeys = std::move(vNewKeys);
+            F.mvKeysUn = std::move(vNewKeysUn);
+            F.mvuRight = std::move(vNewURight);
+            F.mvDepth = std::move(vNewDepth);
+            F.mvpMapPoints = std::move(vNewMPs);
+            F.mvbOutlier = std::move(vNewOutlier);
+            F.mvDynPrior = std::move(vNewDynPrior);
+            F.mvGeoScore = std::move(vNewGeoScore);
+            F.mvStaticReliability = std::move(vNewStaticRel);
+            F.N = new_N;
+
+            if (!F.mDescriptors.empty())
+            {
+                cv::Mat newDesc(new_N, F.mDescriptors.cols, F.mDescriptors.type());
+                for (int k = 0; k < new_N; ++k)
+                    F.mDescriptors.row(vKeepIndices[k]).copyTo(newDesc.row(k));
+                F.mDescriptors = std::move(newDesc);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Unified frame grid rebuild function
+    // -------------------------------------------------------------------
+    void Tracking::RebuildFrameGrid(ORB_SLAM3::Frame &F, const cv::Mat &imGray)
+    {
+        for (int r = 0; r < FRAME_GRID_COLS; ++r)
+            for (int c = 0; c < FRAME_GRID_ROWS; ++c)
+            {
+                F.mGrid[r][c].clear();
+                if (F.Nleft != -1)
+                    F.mGridRight[r][c].clear();
+            }
+
+        float minX = F.mnMinX, minY = F.mnMinY;
+        float invW = F.mfGridElementWidthInv, invH = F.mfGridElementHeightInv;
+
+        for (int i = 0; i < F.N; ++i)
+        {
+            const cv::KeyPoint &kp = F.mvKeysUn[i];
+            int posX = static_cast<int>((kp.pt.x - minX) * invW);
+            int posY = static_cast<int>((kp.pt.y - minY) * invH);
+            if (posX >= 0 && posX < FRAME_GRID_COLS && posY >= 0 && posY < FRAME_GRID_ROWS)
+            {
+                if (F.Nleft == -1 || i < F.Nleft)
+                    F.mGrid[posX][posY].push_back(i);
+                else
+                    F.mGridRight[posX][posY].push_back(i - F.Nleft);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Unified pose smoothing with velocity constraint and Slerp
+    // -------------------------------------------------------------------
+    void Tracking::ApplyPoseSmoothing(ORB_SLAM3::Frame &F, Sophus::SE3f &lastSmoothedTwc,
+                                      Eigen::Vector3f &lastLinearVel, Eigen::Vector3f &lastAngularVel,
+                                      bool &firstSmooth, double dt)
+    {
+        const float alpha_pos = 0.3f;
+        const float alpha_rot = 0.3f;
+        const float max_accel = 2.0f;
+        const float max_ang_accel = 3.0f;
+
+        Sophus::SE3f current_Twc = F.GetPose().inverse();
+
+        if (firstSmooth)
+        {
+            lastSmoothedTwc = current_Twc;
+            firstSmooth = false;
+        }
+        else
+        {
+            Sophus::SE3f delta_raw = lastSmoothedTwc.inverse() * current_Twc;
+            Eigen::Vector3f trans_raw = delta_raw.translation();
+            Eigen::Vector3f rot_vec_raw = delta_raw.so3().log();
+
+            Eigen::Vector3f vel_trans_raw = trans_raw / dt;
+            Eigen::Vector3f vel_ang_raw = rot_vec_raw / dt;
+
+            Eigen::Vector3f vel_trans_clamped = vel_trans_raw;
+            Eigen::Vector3f vel_ang_clamped = vel_ang_raw;
+
+            if (vel_trans_raw.norm() > lastLinearVel.norm() + max_accel * dt)
+                vel_trans_clamped = lastLinearVel.normalized() * (lastLinearVel.norm() + max_accel * dt);
+
+            if (vel_ang_raw.norm() > lastAngularVel.norm() + max_ang_accel * dt)
+                vel_ang_clamped = lastAngularVel.normalized() * (lastAngularVel.norm() + max_ang_accel * dt);
+
+            Eigen::Vector3f t_new = lastSmoothedTwc.translation() + vel_trans_clamped * dt * alpha_pos + trans_raw * (1.0f - alpha_pos);
+
+            Eigen::Quaternionf q_last(lastSmoothedTwc.unit_quaternion());
+            Eigen::AngleAxisf aa_clamped(vel_ang_clamped.norm() * dt, vel_ang_clamped.normalized());
+            Eigen::Quaternionf q_delta(aa_clamped);
+            Eigen::Quaternionf q_target = q_last * q_delta;
+
+            if (q_last.dot(q_target) < 0.0f)
+                q_target.coeffs() = -q_target.coeffs();
+
+            Eigen::Quaternionf q_new = q_last.slerp(alpha_rot, q_target);
+
+            Sophus::SE3f smoothed_Twc(Sophus::SO3f(q_new), t_new);
+            F.SetPose(smoothed_Twc.inverse());
+
+            lastSmoothedTwc = smoothed_Twc;
+            lastLinearVel = vel_trans_clamped;
+            lastAngularVel = vel_ang_clamped;
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Fuse dynamic probability and geometric score to generate final reliability
     // -------------------------------------------------------------------
     void Tracking::FuseReliabilityScores(ORB_SLAM3::Frame &F)
     {
-        // 安全检查：确保向量大小与特征点数量一致
+        // Safety check: ensure vector size matches feature point count
         if (F.mvDynPrior.size() != (size_t)F.N)
             F.mvDynPrior.resize(F.N, 0.1f);
         if (F.mvGeoScore.size() != (size_t)F.N)
@@ -5104,10 +4682,10 @@ if (mState == LOST) {
             float dyn_prob = F.mvDynPrior[i];
             float geo_score = F.mvGeoScore[i];
 
-            // 融合策略：静态可信度 = (1 - 动态概率) * 几何分数
+            // Fusion strategy: static reliability = (1 - dynamic probability) * geometric score
             float reliability = (1.0f - dyn_prob) * geo_score;
 
-            // 再次限制范围
+            // Clamp to valid range
             if (reliability < 0.0f)
                 reliability = 0.0f;
             if (reliability > 1.0f)
@@ -5116,8 +4694,8 @@ if (mState == LOST) {
             F.mvStaticReliability[i] = reliability;
         }
     }
-    // add by cmt
-    // --- 新增：停止控制函数的实现 ---
+
+    // --- Stop control function implementations ---
 
     void Tracking::RequestStop()
     {
@@ -5134,7 +4712,6 @@ if (mState == LOST) {
         return mbStopped;
     }
 
-    // 如果头文件里也声明了 Release，这里也要实现，否则也会报错
     void Tracking::Release()
     {
         unique_lock<mutex> lock(mMutexStop);

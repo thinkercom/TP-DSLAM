@@ -26,17 +26,16 @@ public:
                     int input_size = 640);
     ~DynamicDetector();
 
-    // 输出动态先验图：CV_32FC1, range [0.1, 0.95], 尺寸与输入图像一致
+    // output dynamic prior CV_32FC1, range [0.1, 0.95]
     bool inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_prior_map);
 
-    // 输出二值动态候选 mask: CV_8UC1, values {0, 255}
     bool inferDynamicMask(const cv::Mat &image, cv::Mat &dynamic_mask);
 
-    // 【新增】保存概率热图可视化
+    // save prior map
     bool savePriorMapVisualization(const cv::Mat &prior_map,
                                    const std::string &save_path);
 
-    // 【新增】获取先验图统计信息
+    // get prior map statistics
     void getPriorMapStats(const cv::Mat &prior_map,
                           float &mean_prior,
                           float &max_prior,
@@ -57,16 +56,16 @@ private:
     std::string input_name_str_;
     std::vector<std::string> output_name_strs_;
 
-    // 参数
+    // config
     float conf_thres_;
     float score_thres_;
     float nms_thres_;
     int input_size_;
 
-    // 检测结果
+    // dectetion results
     std::vector<Detection> detections_;
 
-    // 类别到动态先验分数的映射
+    // mapping from class id to dynamic prior
     std::unordered_map<int, float> class_dyn_prior_;
 };
 

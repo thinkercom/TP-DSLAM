@@ -77,7 +77,7 @@ LIST(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules)
 # 3. 查找依赖库
 # ==========================================
 # add by cmt
-set(ONNXRUNTIME_ROOT "/home/cmt/Projects/cmt/onnxruntime_gpu") 
+set(ONNXRUNTIME_ROOT "./onnxruntime_gpu") 
 include_directories(${ONNXRUNTIME_ROOT}/include)
 link_directories(${ONNXRUNTIME_ROOT}/lib)
 
