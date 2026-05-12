@@ -8,6 +8,27 @@
 #include <unordered_map>
 #include <memory>
 
+// ======================== experiment ========================
+// [EXPERIMENT] TensorRT support for Jetson Orin NX
+// Purpose: Enable TensorRT acceleration for YOLO inference
+#ifdef ENABLE_TENSORRT
+#include <NvInfer.h>
+#include <NvOnnxParser.h>
+#include <cuda_runtime_api.h>
+
+// TensorRT Logger
+class TRTLogger : public nvinfer1::ILogger
+{
+public:
+    void log(Severity severity, const char* msg) noexcept override
+    {
+        if (severity != Severity::kINFO)
+            std::cout << "[TRT] " << msg << std::endl;
+    }
+};
+#endif
+// ======================== experiment end =====================
+
 struct Detection
 {
     int class_id;
@@ -47,6 +68,14 @@ private:
     bool isDynamicClass(int class_id) const;
     float getDynamicPriorByClass(int class_id) const;
 
+    // ======================== experiment ========================
+    // [EXPERIMENT] TensorRT inference methods
+#ifdef ENABLE_TENSORRT
+    bool loadTensorRTEngine(const std::string &engine_path);
+    bool inferWithTensorRT(const cv::Mat &image, cv::Mat &dynamic_prior_map);
+#endif
+    // ======================== experiment end =====================
+
 private:
     // ONNX Runtime
     std::unique_ptr<Ort::Env> env_;
@@ -55,6 +84,20 @@ private:
     std::vector<const char *> output_names_;
     std::string input_name_str_;
     std::vector<std::string> output_name_strs_;
+
+    // ======================== experiment ========================
+    // [EXPERIMENT] TensorRT members
+#ifdef ENABLE_TENSORRT
+    TRTLogger trt_logger_;
+    nvinfer1::ICudaEngine* trt_engine_ = nullptr;
+    nvinfer1::IExecutionContext* trt_context_ = nullptr;
+    void* gpu_input_buffer_ = nullptr;
+    void* gpu_output_buffer_ = nullptr;
+    float* host_input_buffer_ = nullptr;
+    float* host_output_buffer_ = nullptr;
+    bool use_tensorrt_ = false;
+#endif
+    // ======================== experiment end =====================
 
     // config
     float conf_thres_;

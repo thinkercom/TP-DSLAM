@@ -2,6 +2,7 @@
 #include <iostream>
 #include <algorithm>
 #include <numeric>
+#include <chrono>  // For performance timing
 
 // ==================== 辅助函数 ====================
 
@@ -154,6 +155,26 @@ DynamicDetector::DynamicDetector(const std::string &model_path,
       nms_thres_(nms_thres),
       input_size_(input_size)
 {
+    // ======================== experiment ========================
+    // [EXPERIMENT] Check if model is TensorRT engine
+#ifdef ENABLE_TENSORRT
+    if (model_path.find(".engine") != std::string::npos)
+    {
+        std::cout << "[EXPERIMENT] Loading TensorRT engine: " << model_path << std::endl;
+        if (loadTensorRTEngine(model_path))
+        {
+            use_tensorrt_ = true;
+            std::cout << "[EXPERIMENT] TensorRT engine loaded successfully!" << std::endl;
+            return;
+        }
+        else
+        {
+            std::cerr << "[EXPERIMENT] Failed to load TensorRT engine, falling back to ONNX" << std::endl;
+        }
+    }
+#endif
+    // ======================== experiment end =====================
+
     // 初始化 ONNX Runtime
     env_ = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "DYNAMIC_DETECTOR");
 
@@ -211,8 +232,6 @@ DynamicDetector::DynamicDetector(const std::string &model_path,
     };
 }
 
-DynamicDetector::~DynamicDetector() = default;
-
 bool DynamicDetector::isDynamicClass(int class_id) const
 {
     return class_dyn_prior_.find(class_id) != class_dyn_prior_.end();
@@ -236,6 +255,16 @@ bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_p
         return false;
     }
 
+    // ======================== experiment ========================
+    // [EXPERIMENT] Use TensorRT if available
+#ifdef ENABLE_TENSORRT
+    if (use_tensorrt_)
+    {
+        return inferWithTensorRT(image, dynamic_prior_map);
+    }
+#endif
+    // ======================== experiment end =====================
+
     int orig_w = image.cols;
     int orig_h = image.rows;
 
@@ -257,11 +286,24 @@ bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_p
         memory_info, input_tensor_values.data(), input_tensor_size,
         input_shape.data(), input_shape.size());
 
+    // ==================== experiment ========================
+    // [EXPERIMENT] Semantic inference timing
+    auto t_infer_start = std::chrono::steady_clock::now();
+    // ==================== experiment end =====================
+
     // ==================== 推理 ====================
     auto output_tensors = session_->Run(
         Ort::RunOptions{nullptr},
         input_names_.data(), &input_tensor, 1,
         output_names_.data(), output_names_.size());
+
+    // ======================== experiment ========================
+    // [EXPERIMENT] Calculate and print semantic inference time
+    auto t_infer_end = std::chrono::steady_clock::now();
+    double infer_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>
+                      (t_infer_end - t_infer_start).count();
+    std::cout << "[EXPERIMENT] Semantic Inference: " << infer_ms << " ms" << std::endl;
+    // ======================== experiment end =====================
 
     if (output_tensors.size() < 2)
     {
@@ -471,3 +513,201 @@ void DynamicDetector::getPriorMapStats(const cv::Mat &prior_map,
     // 统计动态像素数量
     dynamic_pixel_count = cv::countNonZero(prior_map > 0.5f);
 }
+
+// ======================== experiment ========================
+// [EXPERIMENT] TensorRT implementation for Jetson Orin NX
+// Purpose: Accelerate YOLO inference using TensorRT
+#ifdef ENABLE_TENSORRT
+
+bool DynamicDetector::loadTensorRTEngine(const std::string &engine_path)
+{
+    // Read engine file
+    std::ifstream file(engine_path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+    {
+        std::cerr << "Failed to open engine file: " << engine_path << std::endl;
+        return false;
+    }
+
+    size_t size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    std::vector<char> engine_data(size);
+    file.read(engine_data.data(), size);
+    file.close();
+
+    // Create runtime and engine
+    nvinfer1::IRuntime* runtime = nvinfer1::createInferRuntime(trt_logger_);
+    if (!runtime)
+    {
+        std::cerr << "Failed to create TensorRT runtime" << std::endl;
+        return false;
+    }
+
+    trt_engine_ = runtime->deserializeCudaEngine(engine_data.data(), size);
+    if (!trt_engine_)
+    {
+        std::cerr << "Failed to deserialize TensorRT engine" << std::endl;
+        delete runtime;
+        return false;
+    }
+
+    trt_context_ = trt_engine_->createExecutionContext();
+    if (!trt_context_)
+    {
+        std::cerr << "Failed to create TensorRT execution context" << std::endl;
+        delete trt_engine_;
+        trt_engine_ = nullptr;
+        delete runtime;
+        return false;
+    }
+
+    // Allocate GPU memory for input and output
+    const int input_size = 1 * 3 * input_size_ * input_size_;
+    const int output_size = 1 * 84 * 8400;  // YOLOv8 output size
+    
+    cudaMalloc(&gpu_input_buffer_, input_size * sizeof(float));
+    cudaMalloc(&gpu_output_buffer_, output_size * sizeof(float));
+    
+    // Allocate host memory
+    host_input_buffer_ = new float[input_size];
+    host_output_buffer_ = new float[output_size];
+
+    delete runtime;
+    return true;
+}
+
+bool DynamicDetector::inferWithTensorRT(const cv::Mat &image, cv::Mat &dynamic_prior_map)
+{
+    if (!trt_engine_ || !trt_context_)
+    {
+        std::cerr << "TensorRT engine not loaded" << std::endl;
+        return false;
+    }
+
+    int orig_w = image.cols;
+    int orig_h = image.rows;
+
+    // Initialize output map
+    dynamic_prior_map = cv::Mat(orig_h, orig_w, CV_32FC1, cv::Scalar(0.1f));
+
+    // Preprocess image
+    LetterBoxInfo lb;
+    cv::Mat input_image = letterbox(image, input_size_, lb);
+    
+    // Convert to float and normalize
+    cv::Mat rgb;
+    cv::cvtColor(input_image, rgb, cv::COLOR_BGR2RGB);
+    rgb.convertTo(rgb, CV_32F, 1.0 / 255.0);
+
+    // Copy to host buffer (CHW format)
+    int idx = 0;
+    for (int c = 0; c < 3; ++c)
+    {
+        for (int h = 0; h < input_size_; ++h)
+        {
+            for (int w = 0; w < input_size_; ++w)
+            {
+                host_input_buffer_[idx++] = rgb.at<cv::Vec3f>(h, w)[c];
+            }
+        }
+    }
+
+    // Copy input to GPU
+    const int input_size = 1 * 3 * input_size_ * input_size_;
+    cudaMemcpy(gpu_input_buffer_, host_input_buffer_, input_size * sizeof(float), cudaMemcpyHostToDevice);
+
+    // Run inference
+    void* bindings[] = {gpu_input_buffer_, gpu_output_buffer_};
+    trt_context_->executeV2(bindings);
+
+    // Copy output back to host
+    const int output_size = 1 * 84 * 8400;
+    cudaMemcpy(host_output_buffer_, gpu_output_buffer_, output_size * sizeof(float), cudaMemcpyDeviceToHost);
+
+    // Parse detections (simplified - you may need to adjust based on your model)
+    std::vector<cv::Rect> boxes;
+    std::vector<float> scores;
+    std::vector<int> class_ids;
+    std::vector<float> dyn_priors;
+
+    // Parse YOLO output
+    for (int i = 0; i < 8400; ++i)
+    {
+        float cx = host_output_buffer_[0 * 8400 + i];
+        float cy = host_output_buffer_[1 * 8400 + i];
+        float w = host_output_buffer_[2 * 8400 + i];
+        float h = host_output_buffer_[3 * 8400 + i];
+
+        // Find best class
+        float best_score = 0.f;
+        int best_class = -1;
+        for (int cls = 0; cls < 80; ++cls)
+        {
+            float s = host_output_buffer_[(4 + cls) * 8400 + i];
+            if (s > best_score)
+            {
+                best_score = s;
+                best_class = cls;
+            }
+        }
+
+        if (best_score < score_thres_)
+            continue;
+
+        if (!isDynamicClass(best_class))
+            continue;
+
+        // Scale box to original image
+        cv::Rect box = scaleBoxToOriginal(cx, cy, w, h, lb, orig_w, orig_h);
+        if (box.width <= 1 || box.height <= 1)
+            continue;
+
+        boxes.push_back(box);
+        scores.push_back(best_score);
+        class_ids.push_back(best_class);
+        dyn_priors.push_back(getDynamicPriorByClass(best_class));
+    }
+
+    // Apply NMS
+    std::vector<int> indices;
+    cv::dnn::NMSBoxes(boxes, scores, conf_thres_, nms_thres_, indices);
+
+    // Generate prior map
+    for (int idx : indices)
+    {
+        cv::Rect box = boxes[idx];
+        float dyn_prior = dyn_priors[idx];
+
+        // Fill the box region with dynamic prior
+        for (int y = box.y; y < box.y + box.height; ++y)
+        {
+            for (int x = box.x; x < box.x + box.width; ++x)
+            {
+                if (x >= 0 && x < orig_w && y >= 0 && y < orig_h)
+                {
+                    dynamic_prior_map.at<float>(y, x) = dyn_prior;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+DynamicDetector::~DynamicDetector()
+{
+    // Cleanup TensorRT resources
+    if (gpu_input_buffer_) cudaFree(gpu_input_buffer_);
+    if (gpu_output_buffer_) cudaFree(gpu_output_buffer_);
+    if (host_input_buffer_) delete[] host_input_buffer_;
+    if (host_output_buffer_) delete[] host_output_buffer_;
+    if (trt_context_) delete trt_context_;
+    if (trt_engine_) delete trt_engine_;
+}
+
+#else
+
+DynamicDetector::~DynamicDetector() = default;
+
+#endif  // ENABLE_TENSORRT
+// ======================== experiment end =====================

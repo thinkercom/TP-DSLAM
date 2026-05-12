@@ -96,6 +96,51 @@ add_definitions(${PCL_DEFINITIONS})
 message(STATUS "OpenCV Version: ${OpenCV_VERSION}")
 message(STATUS "Eigen3 Include: ${EIGEN3_INCLUDE_DIR}")
 
+# ======================== experiment ========================
+# [EXPERIMENT] TensorRT support for Jetson Orin NX
+# Purpose: Enable TensorRT acceleration for YOLO inference
+option(ENABLE_TENSORRT "Enable TensorRT acceleration" OFF)
+
+if(ENABLE_TENSORRT)
+    message(STATUS "TensorRT acceleration enabled")
+    
+    # Find TensorRT
+    find_path(TENSORRT_INCLUDE_DIR NvInfer.h
+        HINTS /usr/include/x86_64-linux-gnu
+              /usr/include/aarch64-linux-gnu
+              /usr/include
+              ${TENSORRT_ROOT}/include
+    )
+    
+    find_library(TENSORRT_LIBRARY nvinfer
+        HINTS /usr/lib/x86_64-linux-gnu
+              /usr/lib/aarch64-linux-gnu
+              /usr/lib
+              ${TENSORRT_ROOT}/lib
+    )
+    
+    find_library(NVONNXPARSER_LIBRARY nvonnxparser
+        HINTS /usr/lib/x86_64-linux-gnu
+              /usr/lib/aarch64-linux-gnu
+              /usr/lib
+              ${TENSORRT_ROOT}/lib
+    )
+    
+    if(TENSORRT_INCLUDE_DIR AND TENSORRT_LIBRARY)
+        message(STATUS "TensorRT found: ${TENSORRT_INCLUDE_DIR}")
+        include_directories(${TENSORRT_INCLUDE_DIR})
+        add_definitions(-DENABLE_TENSORRT)
+    else()
+        message(WARNING "TensorRT not found, disabling TensorRT support")
+        set(ENABLE_TENSORRT OFF)
+    endif()
+    
+    # Find CUDA
+    find_package(CUDA REQUIRED)
+    include_directories(${CUDA_INCLUDE_DIRS})
+endif()
+# ======================== experiment end =====================
+
 include_directories(
     ${PROJECT_SOURCE_DIR}
     ${PROJECT_SOURCE_DIR}/include
@@ -189,6 +234,18 @@ ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
 onnxruntime
 ${PCL_LIBRARIES}
 )
+
+# ======================== experiment ========================
+# [EXPERIMENT] Link TensorRT libraries
+if(ENABLE_TENSORRT)
+    target_link_libraries(${PROJECT_NAME}
+        ${TENSORRT_LIBRARY}
+        ${NVONNXPARSER_LIBRARY}
+        ${CUDA_LIBRARIES}
+        nvinfer_plugin
+    )
+endif()
+# ======================== experiment end =====================
 
 # 如果需要链接 pthread (某些系统需要)
 target_link_libraries(${PROJECT_NAME} -lpthread)

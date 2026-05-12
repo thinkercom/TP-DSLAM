@@ -26,6 +26,16 @@
 
 #include<System.h>
 
+// ======================== experiment ========================
+// [EXPERIMENT] Performance monitoring for Jetson Orin NX
+// Purpose: Track FPS, RAM, GPU memory usage
+// Can be removed by deleting blocks marked with "experiment"
+#ifdef __linux__
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
+// ======================== experiment end =====================
+
 using namespace std;
 
 void LoadImages(const string &strPathToSequence, vector<string> &vstrImageLeft,
@@ -62,10 +72,22 @@ int main(int argc, char **argv)
     double t_track = 0.f;
     double t_resize = 0.f;
 
+    // ======================== experiment ========================
+    // [EXPERIMENT] FPS and performance monitoring variables
+    double total_time_ms = 0.0;
+    int frame_count = 0;
+    double last_timestamp = 0.0;
+    // ======================== experiment end =====================
+
     // Main loop
     cv::Mat imLeft, imRight;
     for(int ni=0; ni<nImages; ni++)
     {
+        // ======================== experiment ========================
+        // [EXPERIMENT] Record frame start time
+        std::chrono::steady_clock::time_point t_frame_start = std::chrono::steady_clock::now();
+        // ======================== experiment end =====================
+
         // Read left and right images from file
         imLeft = cv::imread(vstrImageLeft[ni],cv::IMREAD_UNCHANGED); //,cv::IMREAD_UNCHANGED);
         imRight = cv::imread(vstrImageRight[ni],cv::IMREAD_UNCHANGED); //,cv::IMREAD_UNCHANGED);
@@ -135,6 +157,63 @@ int main(int argc, char **argv)
 
         if(ttrack<T)
             usleep((T-ttrack)*1e6);
+
+        // ======================== experiment ========================
+        // [EXPERIMENT] FPS and performance statistics
+        std::chrono::steady_clock::time_point t_frame_end = std::chrono::steady_clock::now();
+        double t_frame_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>
+                            (t_frame_end - t_frame_start).count();
+        total_time_ms += t_frame_ms;
+        frame_count++;
+
+        // Calculate FPS based on timestamp
+        double current_fps = 0.0;
+        if (last_timestamp > 0.0)
+        {
+            double delta_time = tframe - last_timestamp;
+            if (delta_time > 0)
+                current_fps = 1.0 / delta_time;
+        }
+        last_timestamp = tframe;
+
+        // Print performance stats every 100 frames
+        if (frame_count % 100 == 0)
+        {
+            double avg_time_per_frame = total_time_ms / frame_count;
+            double calculated_fps = 1000.0 / avg_time_per_frame;
+
+            std::cout << std::endl;
+            std::cout << "=== PERFORMANCE STATS (Stereo-KITTI) ===" << std::endl;
+            std::cout << "Frame ID: " << ni << std::endl;
+            std::cout << "Current Frame Time: " << t_frame_ms << " ms" << std::endl;
+            std::cout << "Average Frame Time: " << avg_time_per_frame << " ms" << std::endl;
+            std::cout << "Calculated Avg FPS: " << calculated_fps << std::endl;
+            std::cout << "Theoretical System FPS: " << current_fps << std::endl;
+            std::cout << "Total Frames Processed: " << frame_count << std::endl;
+
+            // Get RAM usage (Linux only)
+#ifdef __linux__
+            struct rusage usage;
+            getrusage(RUSAGE_SELF, &usage);
+            double ram_mb = usage.ru_maxrss / 1024.0;  // Convert KB to MB
+            std::cout << "RAM Usage: " << ram_mb << " MB" << std::endl;
+
+            // Try to get GPU memory usage (Jetson)
+            FILE* fp = popen("nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null", "r");
+            if (fp)
+            {
+                char buffer[128];
+                if (fgets(buffer, sizeof(buffer), fp))
+                {
+                    double gpu_mb = atof(buffer);
+                    std::cout << "GPU Memory: " << gpu_mb << " MB" << std::endl;
+                }
+                pclose(fp);
+            }
+#endif
+            std::cout << "===============================" << std::endl;
+        }
+        // ======================== experiment end =====================
     }
 
     // Stop all threads
