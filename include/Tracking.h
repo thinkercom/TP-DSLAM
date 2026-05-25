@@ -38,12 +38,12 @@
 #include "Settings.h"
 
 #include "GeometricCamera.h"
-// add by cmt
+
 #include "DynamicDetector.h"
 
 #include <mutex>
 #include <unordered_set>
-// add by cmt
+
 #include <memory>
 
 namespace ORB_SLAM3
@@ -233,7 +233,6 @@ protected:
     // Reset IMU biases and compute frame velocity
     void ResetFrameIMU();
 
-    // add by cmt
     // stop flag
     bool mbStop;
     bool mbStopped;
@@ -384,7 +383,7 @@ protected:
 
 public:
     cv::Mat mImRight;
-    // add by cmt
+
     // === Thread stop control ===
     void RequestStop();
     bool isStopped();

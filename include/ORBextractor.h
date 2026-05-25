@@ -58,7 +58,6 @@ public:
                    std::vector<cv::KeyPoint> &_keypoints,
                    cv::OutputArray _descriptors, std::vector<int> &vLappingArea);
 
-    // // add by cmt
     // void ComputeDescriptors(const cv::Mat &image, std::vector<cv::KeyPoint> &keypoints, cv::Mat &descriptors);
 
     int inline GetLevels(){

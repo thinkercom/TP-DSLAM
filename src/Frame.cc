@@ -134,10 +134,10 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
 #endif
 
     N = mvKeys.size();
-    // --- Add by cmt: 初始化动态先验向量 ---
-    mvDynPrior.resize(N, 0.1f);          // 默认低动态概率 (0.1 表示大概率是静态)
-    mvGeoScore.resize(N, 1.0f);          // 默认几何一致性高 (1.0)
-    mvStaticReliability.resize(N, 1.0f); // 默认完全可信
+    // --- initialize dynamic prior vector ---
+    mvDynPrior.resize(N, 0.1f);          // Default low dynamic probability (0.1 means highly likely static)
+    mvGeoScore.resize(N, 1.0f);          // Default high geometric consistency(1.0)
+    mvStaticReliability.resize(N, 1.0f); // Default fully trusted
     if(mvKeys.empty())
         return;
 
@@ -236,10 +236,9 @@ Frame::Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeSt
 
 
     N = mvKeys.size();
-    // --- Add by cmt: 初始化动态先验向量 ---
-    mvDynPrior.resize(N, 0.1f);          // 默认低动态概率 (0.1 表示大概率是静态)
-    mvGeoScore.resize(N, 1.0f);          // 默认几何一致性高 (1.0)
-    mvStaticReliability.resize(N, 1.0f); // 默认完全可信
+    mvDynPrior.resize(N, 0.1f);
+    mvGeoScore.resize(N, 1.0f);
+    mvStaticReliability.resize(N, 1.0f); 
 
     if(mvKeys.empty())
         return;
@@ -329,10 +328,9 @@ Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extra
 
 
     N = mvKeys.size();
-    // --- Add by cmt: 初始化动态先验向量 ---
-    mvDynPrior.resize(N, 0.1f);          // 默认低动态概率 (0.1 表示大概率是静态)
-    mvGeoScore.resize(N, 1.0f);          // 默认几何一致性高 (1.0)
-    mvStaticReliability.resize(N, 1.0f); // 默认完全可信
+    mvDynPrior.resize(N, 0.1f);      
+    mvGeoScore.resize(N, 1.0f);      
+    mvStaticReliability.resize(N, 1.0f);
     if(mvKeys.empty())
         return;
 

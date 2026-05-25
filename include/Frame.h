@@ -228,11 +228,11 @@ public:
     std::vector<cv::KeyPoint> mvKeys, mvKeysRight;
     std::vector<cv::KeyPoint> mvKeysUn;
 
-    // add by cmt
-    std::vector<float> mvDynPrior;          // 动态先验分数
-    std::vector<float> mvGeoScore;          // 几何一致性评分
-    std::vector<float> mvStaticReliability; // 最终融合的静态可信度
-    std::vector<float> mvDynamicWeights;    // 存储每个关键点的动态权重 (0.0 ~ 1.0)
+
+    std::vector<float> mvDynPrior;          // Dynamic prior score
+    std::vector<float> mvGeoScore;          // Geometric consistency score
+    std::vector<float> mvStaticReliability; // Final fused static confidence
+    std::vector<float> mvDynamicWeights;    // Store the dynamic weight (0.0 ~ 1.0) for each keypoint
 
     // Corresponding stereo coordinate and depth for each keypoint.
     std::vector<MapPoint*> mvpMapPoints;

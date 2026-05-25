@@ -1,29 +1,28 @@
-cmake_minimum_required(VERSION 3.5) # 建议升级到 3.5+ 以更好地支持 FindPython3
-project(ORB_SLAM3)
+cmake_minimum_required(VERSION 3.5)
+project(TP-DSLAM)
 
 # ==========================================
-# 1. Python3 和 NumPy 配置 (针对 Conda 优化)
+# 1. Python3 and NumPy configuration(for Conda)
 # ==========================================
 
-# 如果未指定 Python3_ROOT_DIR，尝试使用当前激活的 Conda 环境
+# if not define Python3_ROOT_DIR
+# try to use the activated Conda environment
 if(DEFINED ENV{CONDA_PREFIX})
     set(CONDA_ENV_PATH $ENV{CONDA_PREFIX})
     message(STATUS "Detected Conda Environment: ${CONDA_ENV_PATH}")
     
-    # 优先使用 Conda 环境中的 Python
+    # use python from Conda environment
     set(Python3_ROOT_DIR "${CONDA_ENV_PATH}")
     set(Python3_FIND_STRATEGY "LOCATION")
 endif()
 
-# 查找 Python3 (Interpreter + Development 库)
-# 移除 NO_DEFAULT_PATH 以允许 CMake 在 ROOT_DIR 下搜索标准 cmake 配置文件
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 
 message(STATUS "Using Python Executable: ${Python3_EXECUTABLE}")
 message(STATUS "Python Include Dirs: ${Python3_INCLUDE_DIRS}")
 message(STATUS "Python Libraries: ${Python3_LIBRARIES}")
 
-# 获取 NumPy 头文件路径
+# get NumPy include path
 if(Python3_Interpreter_FOUND)
     execute_process(
         COMMAND ${Python3_EXECUTABLE} -c "import numpy; print(numpy.get_include())"
@@ -40,14 +39,13 @@ else()
     message(FATAL_ERROR "Python3 Interpreter not found!")
 endif()
 
-# 添加包含目录
 include_directories(
     ${Python3_INCLUDE_DIRS}
     ${NUMPY_INCLUDE_PATH}
 )
 
 # ==========================================
-# 2. 基本构建设置
+# 2. basic config setting
 # ==========================================
 
 IF(NOT CMAKE_BUILD_TYPE)
@@ -66,7 +64,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
 add_definitions(-DCOMPILEDWITHC14)
 message(STATUS "Using flag -std=c++14 to support Pangolin/sigslot.")
 
-# 将 Conda 环境添加到 CMAKE_PREFIX_PATH 以便查找其他库 (Eigen, OpenCV, Boost 等)
+# add conda environment to CMAKE_PREFIX_PATH
 if(DEFINED ENV{CONDA_PREFIX})
     list(APPEND CMAKE_PREFIX_PATH "$ENV{CONDA_PREFIX}")
 endif()
@@ -74,10 +72,10 @@ endif()
 LIST(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules)
 
 # ==========================================
-# 3. 查找依赖库
+# 3. find dependencies
 # ==========================================
-# add by cmt
-set(ONNXRUNTIME_ROOT "./onnxruntime_gpu") 
+
+set(ONNXRUNTIME_ROOT "./onnxruntime_gpu") # your onnxruntime_gpu path
 include_directories(${ONNXRUNTIME_ROOT}/include)
 link_directories(${ONNXRUNTIME_ROOT}/lib)
 
@@ -86,20 +84,19 @@ find_package(Pangolin REQUIRED)
 find_package(realsense2)
 find_package(OpenCV REQUIRED)
 
-# add by cmt
 find_package(PCL REQUIRED)
 include_directories(${PCL_INCLUDE_DIRS})
 link_directories(${PCL_LIBRARY_DIRS})
 add_definitions(${PCL_DEFINITIONS})
 
-# 打印找到的库版本以供调试
+# print version
 message(STATUS "OpenCV Version: ${OpenCV_VERSION}")
 message(STATUS "Eigen3 Include: ${EIGEN3_INCLUDE_DIR}")
 
 # ======================== experiment ========================
 # [EXPERIMENT] TensorRT support for Jetson Orin NX
 # Purpose: Enable TensorRT acceleration for YOLO inference
-option(ENABLE_TENSORRT "Enable TensorRT acceleration" OFF)
+option(ENABLE_TENSORRT "Enable TensorRT acceleration" OFF) # you can open this module to enable TensorRT
 
 if(ENABLE_TENSORRT)
     message(STATUS "TensorRT acceleration enabled")
@@ -148,13 +145,13 @@ include_directories(
     ${PROJECT_SOURCE_DIR}/Thirdparty/Sophus
     ${EIGEN3_INCLUDE_DIR}
     ${Pangolin_INCLUDE_DIRS}
-    ${OpenCV_INCLUDE_DIRS} # 修正：之前是 OpenCV_LIBS，这里应该是 INCLUDE_DIRS
+    ${OpenCV_INCLUDE_DIRS}
 )
 
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
 
 # ==========================================
-# 4. 构建主库
+# 4. build library
 # ==========================================
 
 add_library(${PROJECT_NAME} SHARED
@@ -225,13 +222,13 @@ target_link_libraries(${PROJECT_NAME}
 ${OpenCV_LIBS}
 ${EIGEN3_LIBS}
 ${Pangolin_LIBRARIES}
-${Python3_LIBRARIES} # 链接 Python 库
+${Python3_LIBRARIES}
 ${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
 ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
 -lboost_serialization
 -lcrypto
-# add by cmt
-onnxruntime
+
+onnxruntime # added
 ${PCL_LIBRARIES}
 )
 
@@ -247,7 +244,6 @@ if(ENABLE_TENSORRT)
 endif()
 # ======================== experiment end =====================
 
-# 如果需要链接 pthread (某些系统需要)
 target_link_libraries(${PROJECT_NAME} -lpthread)
 
 # If RealSense SDK is found the library is added and its examples compiled
@@ -262,7 +258,7 @@ endif()
 
 
 # ==========================================
-# 5. 构建示例程序
+# 5. build example programs
 # ==========================================
 
 # RGB-D examples

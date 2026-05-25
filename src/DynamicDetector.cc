@@ -1,10 +1,30 @@
+/**
+ * This file is part of TP-DSLAM (Temporal-Semantic Fusion Dynamic SLAM)
+ *
+ * Copyright (C) 2024-2025 cmt
+ *
+ * TP-DSLAM is based on ORB-SLAM3, which is:
+ * Copyright (C) 2017-2021 Carlos Campos, Richard Elvira, Juan J. Gómez Rodríguez, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
+ * Copyright (C) 2014-2016 Raúl Mur-Artal, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
+ *
+ * TP-DSLAM is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+ * License as published by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * TP-DSLAM is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even
+ * the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with TP-DSLAM.
+ * If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include "DynamicDetector.h"
 #include <iostream>
 #include <algorithm>
 #include <numeric>
 #include <chrono>  // For performance timing
 
-// ==================== 辅助函数 ====================
 
 struct LetterBoxInfo
 {
@@ -109,11 +129,11 @@ static cv::Mat decodeMask(const std::vector<float> &coeff,
         }
     }
 
-    // 2) resize 到输入尺寸
+    // 2) resize to fit input size
     cv::Mat mask_up;
     cv::resize(mask, mask_up, cv::Size(input_size, input_size), 0, 0, cv::INTER_LINEAR);
 
-    // 3) 去掉 letterbox padding
+    // 3) remove letterbox padding
     int x0 = lb.pad_w;
     int y0 = lb.pad_h;
     int w = int(orig_w * lb.scale);
@@ -124,16 +144,15 @@ static cv::Mat decodeMask(const std::vector<float> &coeff,
 
     cv::Mat mask_crop = mask_up(roi).clone();
 
-    // 4) resize 回原图
+    // 4) resize to original size
     cv::Mat mask_orig;
     cv::resize(mask_crop, mask_orig, cv::Size(orig_w, orig_h), 0, 0, cv::INTER_LINEAR);
 
-    // 5) 二值化
+    // 5) binary mask
     cv::Mat mask_bin;
     cv::threshold(mask_orig, mask_bin, 0.5, 255, cv::THRESH_BINARY);
     mask_bin.convertTo(mask_bin, CV_8U);
 
-    // 6) 只保留 box 区域
     cv::Mat final_mask = cv::Mat::zeros(orig_h, orig_w, CV_8U);
     if (box.x >= 0 && box.y >= 0 && box.x + box.width <= orig_w && box.y + box.height <= orig_h)
     {
@@ -143,7 +162,7 @@ static cv::Mat decodeMask(const std::vector<float> &coeff,
     return final_mask;
 }
 
-// ==================== DynamicDetector 实现 ====================
+// ==================== DynamicDetector  ====================
 
 DynamicDetector::DynamicDetector(const std::string &model_path,
                                  float conf_thres,
@@ -175,7 +194,7 @@ DynamicDetector::DynamicDetector(const std::string &model_path,
 #endif
     // ======================== experiment end =====================
 
-    // 初始化 ONNX Runtime
+    // initialize ONNX Runtime
     env_ = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "DYNAMIC_DETECTOR");
 
     Ort::SessionOptions session_options;
@@ -188,15 +207,12 @@ DynamicDetector::DynamicDetector(const std::string &model_path,
         throw std::runtime_error("Failed to load ONNX model: " + model_path);
     }
 
-    // 获取输入输出名称
     Ort::AllocatorWithDefaultOptions allocator;
 
-    // 1. 处理输入名称
     auto input_name_ptr = session_->GetInputNameAllocated(0, allocator);
     input_name_str_ = std::string(input_name_ptr.get());
     input_names_.push_back(input_name_str_.c_str());
 
-    // 2. 处理输出名称
     size_t num_outputs = session_->GetOutputCount();
     output_name_strs_.clear();
     output_names_.clear();
@@ -207,13 +223,11 @@ DynamicDetector::DynamicDetector(const std::string &model_path,
         output_name_strs_.push_back(std::string(out_name_ptr.get()));
     }
 
-    // 3. 将 std::string 的 c_str() 填入 const char* 向量供 ONNX 使用
     for (const auto &s : output_name_strs_)
     {
         output_names_.push_back(s.c_str());
     }
 
-    // COCO 常见潜在动态类别 -> 动态先验
     class_dyn_prior_ = {
         {0, 0.95f},  // person
         {1, 0.75f},  // bicycle
@@ -242,7 +256,7 @@ float DynamicDetector::getDynamicPriorByClass(int class_id) const
     auto it = class_dyn_prior_.find(class_id);
     if (it != class_dyn_prior_.end())
         return it->second;
-    return 0.1f; // 默认静态先验
+    return 0.1f; // default dynamic prior
 }
 
 bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_prior_map)
@@ -268,16 +282,13 @@ bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_p
     int orig_w = image.cols;
     int orig_h = image.rows;
 
-    // ==================== 初始化动态先验图 ====================
-    // 【关键】确保输出尺寸与输入图像完全一致
+    // ==================== initialize dynamic prior map ====================
     dynamic_prior_map = cv::Mat(orig_h, orig_w, CV_32FC1, cv::Scalar(0.1f));
 
-    // ==================== 预处理 ====================
     LetterBoxInfo lb;
     cv::Mat input_image = letterbox(image, input_size_, lb);
     std::vector<float> input_tensor_values = blobFromImage(input_image);
 
-    // ==================== 创建输入 Tensor ====================
     std::vector<int64_t> input_shape = {1, 3, input_size_, input_size_};
     size_t input_tensor_size = input_tensor_values.size();
 
@@ -291,7 +302,7 @@ bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_p
     auto t_infer_start = std::chrono::steady_clock::now();
     // ==================== experiment end =====================
 
-    // ==================== 推理 ====================
+    // ==================== Interfere ================
     auto output_tensors = session_->Run(
         Ort::RunOptions{nullptr},
         input_names_.data(), &input_tensor, 1,
@@ -312,7 +323,6 @@ bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_p
         return false;
     }
 
-    // ==================== 解析输出 ====================
     float *out0 = output_tensors[0].GetTensorMutableData<float>();
     float *proto = output_tensors[1].GetTensorMutableData<float>();
 
@@ -326,7 +336,7 @@ bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_p
     int proto_h = (int)shape1[2];
     int proto_w = (int)shape1[3];
 
-    // 计算类别数：C = 4 (bbox) + num_classes + mask_dim
+    // calculate num_classes：C = 4 (bbox) + num_classes + mask_dim
     int num_classes = c - 4 - mask_dim;
 
     std::vector<cv::Rect> boxes;
@@ -335,17 +345,15 @@ bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_p
     std::vector<std::vector<float>> coeffs_all;
     std::vector<float> dyn_priors;
 
-    // ==================== 解析检测输出 ====================
     for (int i = 0; i < n; ++i)
     {
-        const float *p = out0 + i; // 按 [C, N] 列优先访问
+        const float *p = out0 + i;
 
         float cx = p[0 * n];
         float cy = p[1 * n];
         float w = p[2 * n];
         float h = p[3 * n];
 
-        // 找最大类别分数
         float best_score = 0.f;
         int best_class = -1;
 
@@ -359,20 +367,16 @@ bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_p
             }
         }
 
-        // 分数阈值过滤
         if (best_score < score_thres_)
             continue;
 
-        // 只保留动态类别
         if (!isDynamicClass(best_class))
             continue;
 
-        // 坐标还原到原图
         cv::Rect box = scaleBoxToOriginal(cx, cy, w, h, lb, orig_w, orig_h);
         if (box.width <= 1 || box.height <= 1)
             continue;
 
-        // 提取 mask 系数
         std::vector<float> coeff(mask_dim);
         for (int k = 0; k < mask_dim; ++k)
         {
@@ -390,8 +394,7 @@ bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_p
     std::vector<int> indices;
     cv::dnn::NMSBoxes(boxes, scores, conf_thres_, nms_thres_, indices);
 
-    // ==================== 生成动态先验概率热图 ====================
-    // 【关键】使用实例 mask 精确更新每个像素的动态概率
+    // ==================== generate dynamic prior map ====================
     for (int idx : indices)
     {
         Detection det;
@@ -399,8 +402,6 @@ bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_p
         det.conf = scores[idx];
         det.box = boxes[idx];
         det.dyn_prior = dyn_priors[idx];
-
-        // 解码实例 mask（得到原图尺寸的二值 mask）
         cv::Mat instance_mask = decodeMask(
             coeffs_all[idx],
             proto,
@@ -410,8 +411,6 @@ bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_p
             orig_w, orig_h,
             input_size_);
 
-        // 【关键】使用 mask 区域更新动态先验图
-        // 对于重叠区域，取最大动态概率（最保守策略）
         for (int y = 0; y < orig_h; ++y)
         {
             for (int x = 0; x < orig_w; ++x)
@@ -427,13 +426,10 @@ bool DynamicDetector::inferDynamicPrior(const cv::Mat &image, cv::Mat &dynamic_p
         detections_.push_back(det);
     }
 
-    // ==================== 可选：高斯模糊使边界更平滑 ====================
-    // 【关键】让动态/静态边界过渡更自然，避免硬切割
     if (!detections_.empty())
     {
         cv::GaussianBlur(dynamic_prior_map, dynamic_prior_map, cv::Size(5, 5), 1.5);
 
-        // 确保值范围在 [0.1, 0.95] 之间
         cv::threshold(dynamic_prior_map, dynamic_prior_map, 0.95, 0.95, cv::THRESH_TRUNC);
         cv::threshold(dynamic_prior_map, dynamic_prior_map, 0.1, 0.1, cv::THRESH_TOZERO);
     }
@@ -447,7 +443,7 @@ bool DynamicDetector::inferDynamicMask(const cv::Mat &image, cv::Mat &dynamic_ma
     if (!inferDynamicPrior(image, prior_map))
         return false;
 
-    // 二值化：先验分数 > 0.5 视为动态区域
+    // binary threshold 
     dynamic_mask = cv::Mat::zeros(prior_map.size(), CV_8UC1);
     for (int y = 0; y < prior_map.rows; ++y)
     {
@@ -460,7 +456,7 @@ bool DynamicDetector::inferDynamicMask(const cv::Mat &image, cv::Mat &dynamic_ma
     return true;
 }
 
-// ==================== 新增：可视化保存概率热图 ====================
+// ==================== visualization--save prior map  ====================
 bool DynamicDetector::savePriorMapVisualization(const cv::Mat &prior_map,
                                                 const std::string &save_path)
 {
@@ -470,22 +466,19 @@ bool DynamicDetector::savePriorMapVisualization(const cv::Mat &prior_map,
         return false;
     }
 
-    // 1. 归一化到 [0, 255]
     cv::Mat prior_u8;
     prior_map.convertTo(prior_u8, CV_8UC1, 255.0);
 
-    // 2. 应用伪彩色映射
     cv::Mat color_map;
     cv::applyColorMap(prior_u8, color_map, cv::COLORMAP_JET);
 
-    // 3. 保存
     cv::imwrite(save_path, color_map);
 
     std::cout << "Saved prior map visualization: " << save_path << std::endl;
     return true;
 }
 
-// ==================== 新增：获取先验图统计信息 ====================
+// ====================  get prior map Statistics ====================
 void DynamicDetector::getPriorMapStats(const cv::Mat &prior_map,
                                        float &mean_prior,
                                        float &max_prior,
@@ -499,18 +492,15 @@ void DynamicDetector::getPriorMapStats(const cv::Mat &prior_map,
         return;
     }
 
-    // 计算均值和标准差
     cv::Scalar mean_val, std_val;
     cv::meanStdDev(prior_map, mean_val, std_val);
     mean_prior = static_cast<float>(mean_val[0]);
 
-    // 【修复】使用 double 临时变量接收 minMaxLoc 的结果
     double min_val = 0.0;
     double max_val = 0.0;
     cv::minMaxLoc(prior_map, &min_val, &max_val);
     max_prior = static_cast<float>(max_val);
 
-    // 统计动态像素数量
     dynamic_pixel_count = cv::countNonZero(prior_map > 0.5f);
 }
 

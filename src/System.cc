@@ -83,7 +83,6 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
         mStrLoadAtlasFromFile = settings_->atlasLoadFile();
         mStrSaveAtlasToFile = settings_->atlasSaveFile();
 
-        // change by cmt
         // cout << (*settings_) << endl;
     }
     else{
@@ -515,7 +514,6 @@ void System::ResetActiveMap()
     mbResetActiveMap = true;
 }
 
-// add by cmt
 void System::Shutdown()
 {
     {
@@ -525,21 +523,17 @@ void System::Shutdown()
 
     cout << "Shutdown: Requesting finish to threads..." << endl;
 
-    // 1. 请求所有线程停止
     mpLocalMapper->RequestFinish();
     mpLoopCloser->RequestFinish();
 
-    // 【关键新增】请求 Tracker 停止
     if (mpTracker)
         mpTracker->RequestStop();
 
-    // 如果有 Viewer (Pangolin)，也请求停止
     if (mpViewer)
     {
         mpViewer->RequestFinish();
     }
 
-    // 2. 【关键新增】等待 Tracking 线程彻底退出
     if (mpTracker)
     {
         cout << "Shutdown: Requesting finish to threads..." << endl;
@@ -547,13 +541,12 @@ void System::Shutdown()
 
         cout << "Shutdown: Waiting for Tracker to stop..." << endl;
 
-        // 【新增】超时保护，最多等 2 秒，防止死等
         int wait_count = 0;
         while (!mpTracker->isStopped())
         {
             usleep(2000);
             wait_count++;
-            if (wait_count > 1000) // 2秒超时
+            if (wait_count > 1000)
             {
                 cout << "[WARNING] Tracker did not stop in time! Forcing shutdown to save files..." << endl;
                 break;
@@ -561,16 +554,11 @@ void System::Shutdown()
         }
     }
 
-    // 3. 等待其他线程 (LocalMapper, LoopCloser)
-    // 注意：原代码中这部分被注释了，建议解开或者确保它们能正常退出
-    // 如果 LocalMapper 卡住，可能需要强制退出，但通常 RequestFinish + isFinished 就够了
+ 
     while (!mpLocalMapper->isFinished() || !mpLoopCloser->isFinished())
     {
-        // 防止死循环，可以加个超时计数，但通常不需要
         usleep(2000);
 
-        // 调试信息 (可选，太多会刷屏，建议注释掉)
-        // if(!mpLocalMapper->isFinished()) cout << "." << flush;
     }
 
     if (mpViewer)
@@ -581,12 +569,9 @@ void System::Shutdown()
 
     cout << "Shutdown: All threads finished." << endl;
 
-    // 4. 【关键修改】现在才安全地销毁 OpenCV 窗口
-    // 因为此时 Tracking 线程已经彻底退出了，不会再有人调用 imshow
     std::cout << "[System] Destroying OpenCV windows..." << endl;
     cv::destroyAllWindows();
 
-    // 5. 保存地图 (如果有)
     if (!mStrSaveAtlasToFile.empty())
     {
         Verbose::PrintMess("Atlas saving to file " + mStrSaveAtlasToFile, Verbose::VERBOSITY_NORMAL);
@@ -1591,13 +1576,11 @@ string System::CalculateCheckSum(string filename, int type)
     return checksum;
 }
 
-// add by cmt
+
 void System::SavePCL(const string &filename)
 {
-    // 1. 获取当前活动地图中的所有地图点
     vector<MapPoint *> vpMPs = mpAtlas->GetCurrentMap()->GetAllMapPoints();
 
-    // 2. 创建 PCL 点云对象
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
     for (size_t i = 0; i < vpMPs.size(); i++)
@@ -1605,7 +1588,6 @@ void System::SavePCL(const string &filename)
         MapPoint *pMP = vpMPs[i];
         if (pMP && !pMP->isBad())
         {
-            // 获取地图点的世界坐标 (Eigen::Vector3f)
             Eigen::Vector3f pos = pMP->GetWorldPos();
 
             pcl::PointXYZ pt;
@@ -1620,7 +1602,6 @@ void System::SavePCL(const string &filename)
     cloud->height = 1;
     cloud->is_dense = true;
 
-    // 3. 保存为 PCD 文件
     pcl::io::savePCDFileBinary(filename, *cloud);
     cout << "PCL Map saved to: " << filename << " with " << cloud->points.size() << " points." << endl;
 }

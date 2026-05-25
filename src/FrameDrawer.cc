@@ -34,173 +34,6 @@ FrameDrawer::FrameDrawer(Atlas* pAtlas):both(false),mpAtlas(pAtlas)
     mImRight = cv::Mat(480,640,CV_8UC3, cv::Scalar(0,0,0));
 }
 
-// cv::Mat FrameDrawer::DrawFrame(float imageScale)
-// {
-//     cv::Mat im;
-//     vector<cv::KeyPoint> vIniKeys; // Initialization: KeyPoints in reference frame
-//     vector<int> vMatches; // Initialization: correspondeces with reference keypoints
-//     vector<cv::KeyPoint> vCurrentKeys; // KeyPoints in current frame
-//     vector<bool> vbVO, vbMap; // Tracked MapPoints in current frame
-//     vector<pair<cv::Point2f, cv::Point2f> > vTracks;
-//     int state; // Tracking state
-//     vector<float> vCurrentDepth;
-//     float thDepth;
-
-//     Frame currentFrame;
-//     vector<MapPoint*> vpLocalMap;
-//     vector<cv::KeyPoint> vMatchesKeys;
-//     vector<MapPoint*> vpMatchedMPs;
-//     vector<cv::KeyPoint> vOutlierKeys;
-//     vector<MapPoint*> vpOutlierMPs;
-//     map<long unsigned int, cv::Point2f> mProjectPoints;
-//     map<long unsigned int, cv::Point2f> mMatchedInImage;
-
-//     cv::Scalar standardColor(0,255,0);
-//     cv::Scalar odometryColor(255,0,0);
-
-//     //Copy variables within scoped mutex
-//     {
-//         unique_lock<mutex> lock(mMutex);
-//         state=mState;
-//         if(mState==Tracking::SYSTEM_NOT_READY)
-//             mState=Tracking::NO_IMAGES_YET;
-
-//         mIm.copyTo(im);
-
-//         if(mState==Tracking::NOT_INITIALIZED)
-//         {
-//             vCurrentKeys = mvCurrentKeys;
-//             vIniKeys = mvIniKeys;
-//             vMatches = mvIniMatches;
-//             vTracks = mvTracks;
-//         }
-//         else if(mState==Tracking::OK)
-//         {
-//             vCurrentKeys = mvCurrentKeys;
-//             vbVO = mvbVO;
-//             vbMap = mvbMap;
-
-//             currentFrame = mCurrentFrame;
-//             vpLocalMap = mvpLocalMap;
-//             vMatchesKeys = mvMatchedKeys;
-//             vpMatchedMPs = mvpMatchedMPs;
-//             vOutlierKeys = mvOutlierKeys;
-//             vpOutlierMPs = mvpOutlierMPs;
-//             mProjectPoints = mmProjectPoints;
-//             mMatchedInImage = mmMatchedInImage;
-
-//             vCurrentDepth = mvCurrentDepth;
-//             thDepth = mThDepth;
-
-//         }
-//         else if(mState==Tracking::LOST)
-//         {
-//             vCurrentKeys = mvCurrentKeys;
-//         }
-//     }
-
-//     if(imageScale != 1.f)
-//     {
-//         int imWidth = im.cols / imageScale;
-//         int imHeight = im.rows / imageScale;
-//         cv::resize(im, im, cv::Size(imWidth, imHeight));
-//     }
-
-//     if(im.channels()<3) //this should be always true
-//         cvtColor(im,im,cv::COLOR_GRAY2BGR);
-
-//     //Draw
-//     if(state==Tracking::NOT_INITIALIZED)
-//     {
-//         for(unsigned int i=0; i<vMatches.size(); i++)
-//         {
-//             if(vMatches[i]>=0)
-//             {
-//                 cv::Point2f pt1,pt2;
-//                 if(imageScale != 1.f)
-//                 {
-//                     pt1 = vIniKeys[i].pt / imageScale;
-//                     pt2 = vCurrentKeys[vMatches[i]].pt / imageScale;
-//                 }
-//                 else
-//                 {
-//                     pt1 = vIniKeys[i].pt;
-//                     pt2 = vCurrentKeys[vMatches[i]].pt;
-//                 }
-//                 cv::line(im,pt1,pt2,standardColor);
-//             }
-//         }
-//         for(vector<pair<cv::Point2f, cv::Point2f> >::iterator it=vTracks.begin(); it!=vTracks.end(); it++)
-//         {
-//             cv::Point2f pt1,pt2;
-//             if(imageScale != 1.f)
-//             {
-//                 pt1 = (*it).first / imageScale;
-//                 pt2 = (*it).second / imageScale;
-//             }
-//             else
-//             {
-//                 pt1 = (*it).first;
-//                 pt2 = (*it).second;
-//             }
-//             cv::line(im,pt1,pt2, standardColor,5);
-//         }
-
-//     }
-//     else if(state==Tracking::OK) //TRACKING
-//     {
-//         mnTracked=0;
-//         mnTrackedVO=0;
-//         const float r = 5;
-//         int n = vCurrentKeys.size();
-//         for(int i=0;i<n;i++)
-//         {
-//             if(vbVO[i] || vbMap[i])
-//             {
-//                 cv::Point2f pt1,pt2;
-//                 cv::Point2f point;
-//                 if(imageScale != 1.f)
-//                 {
-//                     point = vCurrentKeys[i].pt / imageScale;
-//                     float px = vCurrentKeys[i].pt.x / imageScale;
-//                     float py = vCurrentKeys[i].pt.y / imageScale;
-//                     pt1.x=px-r;
-//                     pt1.y=py-r;
-//                     pt2.x=px+r;
-//                     pt2.y=py+r;
-//                 }
-//                 else
-//                 {
-//                     point = vCurrentKeys[i].pt;
-//                     pt1.x=vCurrentKeys[i].pt.x-r;
-//                     pt1.y=vCurrentKeys[i].pt.y-r;
-//                     pt2.x=vCurrentKeys[i].pt.x+r;
-//                     pt2.y=vCurrentKeys[i].pt.y+r;
-//                 }
-
-//                 // This is a match to a MapPoint in the map
-//                 if(vbMap[i])
-//                 {
-//                     cv::rectangle(im,pt1,pt2,standardColor);
-//                     cv::circle(im,point,2,standardColor,-1);
-//                     mnTracked++;
-//                 }
-//                 else // This is match to a "visual odometry" MapPoint created in the last frame
-//                 {
-//                     cv::rectangle(im,pt1,pt2,odometryColor);
-//                     cv::circle(im,point,2,odometryColor,-1);
-//                     mnTrackedVO++;
-//                 }
-//             }
-//         }
-//     }
-
-//     cv::Mat imWithInfo;
-//     DrawTextInfo(im,state, imWithInfo);
-
-//     return imWithInfo;
-// }
-
 cv::Mat FrameDrawer::DrawFrame(float imageScale)
 {
     cv::Mat im;
@@ -224,7 +57,6 @@ cv::Mat FrameDrawer::DrawFrame(float imageScale)
 
     cv::Scalar standardColor(0, 255, 0); // Green: Static/Map
     cv::Scalar odometryColor(255, 0, 0); // Red: VO/New
-    // CMT: 定义动态相关的颜色
     cv::Scalar dynamicColor(0, 0, 255);     // Blue (OpenCV is BGR): Low reliability (Dynamic)
     cv::Scalar uncertainColor(0, 255, 255); // Cyan: Medium reliability
 
@@ -323,7 +155,6 @@ cv::Mat FrameDrawer::DrawFrame(float imageScale)
         const float r = 5;
         int n = vCurrentKeys.size();
 
-        // CMT: 安全检查，确保可靠性向量大小与关键点数量一致
         bool useReliability = (currentFrame.mvStaticReliability.size() == (size_t)n);
 
         for (int i = 0; i < n; i++)
@@ -353,7 +184,7 @@ cv::Mat FrameDrawer::DrawFrame(float imageScale)
                 }
 
                 // ---------------------------------------------------------
-                // CMT MODIFY START: 根据可靠性分数决定颜色
+                // Decide color by reliability score
                 // ---------------------------------------------------------
                 cv::Scalar drawColor;
 
@@ -361,12 +192,10 @@ cv::Mat FrameDrawer::DrawFrame(float imageScale)
                 {
                     float rel = currentFrame.mvStaticReliability[i];
 
-                    // 阈值可根据实际效果调整
+
                     if (rel > 0.7f)
                     {
-                        // 高可信度 (静态)
-                        // 如果是地图点，保持绿色；如果是VO点，保持红色 (或者统一变绿表示可信)
-                        // 这里我们保留原有的逻辑区分 Map/VO，但如果是低可信度则强制变蓝
+
                         if (vbMap[i])
                             drawColor = cv::Scalar(0, 255, 0); // Green
                         else
@@ -374,12 +203,10 @@ cv::Mat FrameDrawer::DrawFrame(float imageScale)
                     }
                     else if (rel > 0.3f)
                     {
-                        // 中等可信度 (黄色警告)
                         drawColor = cv::Scalar(0, 255, 255); // Cyan/Yellow-ish
                     }
                     else
                     {
-                        // 低可信度 (可能是动态点) -> 强制显示为蓝色/红色警示
                         drawColor = cv::Scalar(255, 0, 0); // Blue (in BGR) or Red depending on preference
                         // OpenCV BGR: (0,0,255) is Red, (255,0,0) is Blue.
                         // Let's use Bright Blue for Dynamic to distinguish from standard Red VO.
@@ -388,19 +215,13 @@ cv::Mat FrameDrawer::DrawFrame(float imageScale)
                 }
                 else
                 {
-                    // 如果没有可靠性数据，回退到原始逻辑
                     if (vbMap[i])
                         drawColor = standardColor;
                     else
                         drawColor = odometryColor;
                 }
 
-                // 绘制矩形框和中心点
-                cv::rectangle(im, pt1, pt2, drawColor, 1); // 线宽改为1以免太乱
-                cv::circle(im, point, 2, drawColor, -1);
-                // ---------------------------------------------------------
-                // CMT MODIFY END
-                // ---------------------------------------------------------
+                cv::rectangle(im, pt1, pt2, drawColor, 1); 
 
                 if (vbMap[i])
                     mnTracked++;
@@ -409,7 +230,6 @@ cv::Mat FrameDrawer::DrawFrame(float imageScale)
             }
         }
 
-        // [可选] 在图像左上角打印统计信息
         if (useReliability)
         {
             int dynamicCount = 0;
@@ -419,7 +239,7 @@ cv::Mat FrameDrawer::DrawFrame(float imageScale)
                     dynamicCount++;
             }
             char info[100];
-            sprintf(info, "DynPts: %d", dynamicCount);
+            // sprintf(info, "DynPts: %d", dynamicCount);
             cv::putText(im, info, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
         }
     }
