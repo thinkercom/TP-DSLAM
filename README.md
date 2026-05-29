@@ -103,7 +103,7 @@ We evaluated TP-DSLAM on standard benchmarks including **TUM RGB-D**, **KITTI**,
 | **w_half** | 0.312 | 0.025 | 0.028 | **0.026** |
 | **w_xyz** | 0.510 | **0.015** | **0.015** | **0.015** |
 | **w_rpy** | 0.536 | **0.035** | 0.036 | **0.035** |
-| **Avg. (Dyn)** | 0.381 | 0.020 | 0.022 | **0.021** |
+| **Avg. (Dyn)** | 0.381 | 0.020 | 0.022 | 0.021 |
 
 ### Robustness in Challenging Conditions
 
@@ -150,7 +150,7 @@ We evaluated TP-DSLAM on standard benchmarks including **TUM RGB-D**, **KITTI**,
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-username/TP-DSLAM.git
+git clone + link
 cd TP-DSLAM
 ```
 
