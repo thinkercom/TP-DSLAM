@@ -1272,9 +1272,37 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     vector<MapPoint*> vpMapPointEdgeStereo;
     vpMapPointEdgeStereo.reserve(nExpectedSize);
 
-    const float thHuberMono = sqrt(5.991);
-    const float thHuberStereo = sqrt(7.815);
-
+    // === Dynamic Adaptive Huber Kernel Thresholds ===
+    // Base thresholds (chi2 values for 2DOF and 3DOF)
+    const float thHuberMonoBase = sqrt(5.991);
+    const float thHuberStereoBase = sqrt(7.815);
+    
+    // Compute dynamic ratio from current keyframe
+    float dynamicRatio = 0.0f;
+    int dynamicCount = 0;
+    int totalCount = 0;
+    
+    // Count dynamic features in local keyframes
+    for(list<KeyFrame*>::iterator lit=lLocalKeyFrames.begin(), lend=lLocalKeyFrames.end(); lit!=lend; lit++)
+    {
+        KeyFrame* pKFi = *lit;
+        for(int i = 0; i < pKFi->N; ++i)
+        {
+            totalCount++;
+            if(i < (int)pKFi->mvDynPrior.size() && pKFi->mvDynPrior[i] > 0.6f)
+                dynamicCount++;
+        }
+    }
+    
+    if(totalCount > 0)
+        dynamicRatio = static_cast<float>(dynamicCount) / totalCount;
+    
+    // Adaptive Huber delta: more dynamic -> more conservative (smaller delta)
+    // dynamicRatio in [0, 1], adaptiveFactor in [0.3, 1.0]
+    float adaptiveFactor = 1.0f - 0.7f * dynamicRatio;
+    const float thHuberMono = thHuberMonoBase * adaptiveFactor;
+    const float thHuberStereo = thHuberStereoBase * adaptiveFactor;
+    
     int nPoints = 0;
 
     int nEdges = 0;
@@ -1301,6 +1329,11 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             {
                 const int leftIndex = get<0>(mit->second);
 
+                // Get static reliability for adaptive weighting
+                float staticReliability = 1.0f;
+                if(leftIndex != -1 && leftIndex < (int)pKFi->mvStaticReliability.size())
+                    staticReliability = pKFi->mvStaticReliability[leftIndex];
+
                 // Monocular observation
                 if(leftIndex != -1 && pKFi->mvuRight[get<0>(mit->second)]<0)
                 {
@@ -1314,11 +1347,17 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                     e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFi->mnId)));
                     e->setMeasurement(obs);
                     const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave];
-                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                    
+                    // DGCM: Weight information matrix by static reliability
+                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2*staticReliability);
 
+                    // Adaptive Huber kernel based on dynamic context
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
-                    rk->setDelta(thHuberMono);
+                    
+                    // Further reduce delta for low reliability points
+                    float pointDelta = thHuberMono * (0.5f + 0.5f * staticReliability);
+                    rk->setDelta(pointDelta);
 
                     e->pCamera = pKFi->mpCamera;
 
@@ -1342,12 +1381,18 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                     e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFi->mnId)));
                     e->setMeasurement(obs);
                     const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave];
-                    Eigen::Matrix3d Info = Eigen::Matrix3d::Identity()*invSigma2;
+                    
+                    // DGCM: Weight information matrix by static reliability
+                    Eigen::Matrix3d Info = Eigen::Matrix3d::Identity()*invSigma2*staticReliability;
                     e->setInformation(Info);
 
+                    // Adaptive Huber kernel based on dynamic context
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
-                    rk->setDelta(thHuberStereo);
+                    
+                    // Further reduce delta for low reliability points
+                    float pointDelta = thHuberStereo * (0.5f + 0.5f * staticReliability);
+                    rk->setDelta(pointDelta);
 
                     e->fx = pKFi->fx;
                     e->fy = pKFi->fy;
@@ -1379,11 +1424,18 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                         e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFi->mnId)));
                         e->setMeasurement(obs);
                         const float &invSigma2 = pKFi->mvInvLevelSigma2[kp.octave];
-                        e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                        
+                        // DGCM: Weight information matrix by static reliability
+                        float rightReliability = 1.0f;
+                        if(rightIndex < (int)pKFi->mvStaticReliability.size())
+                            rightReliability = pKFi->mvStaticReliability[rightIndex];
+                        e->setInformation(Eigen::Matrix2d::Identity()*invSigma2*rightReliability);
 
+                        // Adaptive Huber kernel
                         g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                         e->setRobustKernel(rk);
-                        rk->setDelta(thHuberMono);
+                        float pointDelta = thHuberMono * (0.5f + 0.5f * rightReliability);
+                        rk->setDelta(pointDelta);
 
                         Sophus::SE3f Trl = pKFi-> GetRelativePoseTrl();
                         e->mTrl = g2o::SE3Quat(Trl.unit_quaternion().cast<double>(), Trl.translation().cast<double>());

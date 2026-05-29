@@ -384,6 +384,11 @@ public:
     const std::vector<float> mvDepth; // negative value for monocular points
     const cv::Mat mDescriptors;
 
+    // === DGCM: Dynamic confidence scores for adaptive optimization ===
+    std::vector<float> mvDynPrior;          // Dynamic prior probability per keypoint
+    std::vector<float> mvGeoScore;          // Geometric consistency score per keypoint
+    std::vector<float> mvStaticReliability; // Final fused static confidence per keypoint
+
     //BoW
     DBoW2::BowVector mBowVec;
     DBoW2::FeatureVector mFeatVec;

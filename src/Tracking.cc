@@ -139,6 +139,38 @@ namespace ORB_SLAM3
         vdTrackTotal_ms.clear();
 #endif
 
+        // === Initialize configurable dynamic detection parameters ===
+        // Read from settings file if available, otherwise use defaults
+        mDynamicDropThreshold = 0.60f;   // Default threshold
+        mDynamicSkipFrames = 2;          // Default skip frames
+        mHighwayMode = false;            // Default: not highway mode
+        
+        // Always try to read dynamic detection parameters from settings file
+        cv::FileStorage fSettings(strSettingPath, cv::FileStorage::READ);
+        if (fSettings.isOpened())
+        {
+            cv::FileNode node = fSettings["DynamicDetector.dropThreshold"];
+            if (!node.empty())
+                mDynamicDropThreshold = static_cast<float>(node);
+                
+            node = fSettings["DynamicDetector.skipFrames"];
+            if (!node.empty())
+                mDynamicSkipFrames = static_cast<int>(node);
+                
+            node = fSettings["DynamicDetector.highwayMode"];
+            if (!node.empty())
+                mHighwayMode = static_cast<int>(node) != 0;
+        }
+        
+        // Highway mode: more aggressive filtering
+        if (mHighwayMode)
+        {
+            mDynamicDropThreshold = std::min(mDynamicDropThreshold, 0.45f);
+            mDynamicSkipFrames = std::max(1, mDynamicSkipFrames - 1);
+            std::cout << "[TP-DSLAM] Highway Mode Enabled: Threshold=" << mDynamicDropThreshold 
+                      << ", Skip=" << mDynamicSkipFrames << std::endl;
+        }
+
         // Initialize dynamic detector (YOLO)
         try
         {
@@ -1553,9 +1585,10 @@ namespace ORB_SLAM3
         else if (mSensor == System::IMU_STEREO && mpCamera2)
             mCurrentFrame = Frame(mImGray, imGrayRight, timestamp, mpORBextractorLeft, mpORBextractorRight, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera, mpCamera2, mTlr, &mLastFrame, *mpImuCalib);
 
-        // --- 3. Dynamic object handling ---
-        constexpr float HARD_DROP_THRESHOLD = 0.60f;
-        constexpr int SKIP_FRAMES = 2;
+        // --- 3. Dynamic object handling with DGCM ---
+        // Use configurable thresholds (set in constructor based on config file)
+        const float HARD_DROP_THRESHOLD = mDynamicDropThreshold;
+        const int SKIP_FRAMES = mDynamicSkipFrames;
 
         static int frame_counter = 0;
         static bool first_run = true;
@@ -1563,19 +1596,24 @@ namespace ORB_SLAM3
         if (first_run)
         {
             std::cout << "[TP-DSLAM] Perf Mode: Threshold=" << HARD_DROP_THRESHOLD << ", Skip=" << SKIP_FRAMES << std::endl;
+            mbHasLastSemantic = false;
             first_run = false;
         }
 
         bool run_inference = (frame_counter % (SKIP_FRAMES + 1) == 0);
         frame_counter++;
 
-        // Process dynamic prior using unified function
+        // TLSP: Process dynamic prior with pose-guided warping
         cv::Mat inputImg = imLeftOriginal.empty() ? mImGray : imLeftOriginal;
         ProcessDynamicPrior(inputImg, mDynamicPriorMap, run_inference);
 
-        // Filter dynamic keypoints using unified function
+        // DGCM: Compute disparity-gated confidence modulation
         if (!mDynamicPriorMap.empty() && mDynamicPriorMap.size() == mImGray.size())
         {
+            // Apply DGCM to compute confidence scores
+            ComputeDisparityGatedConfidence(mCurrentFrame, mDynamicPriorMap);
+            
+            // Filter dynamic keypoints using DGCM confidence
             FilterDynamicKeypoints(mCurrentFrame, mDynamicPriorMap, HARD_DROP_THRESHOLD);
             RebuildFrameGrid(mCurrentFrame, mImGray);
         }
@@ -1708,9 +1746,10 @@ namespace ORB_SLAM3
         else if (mSensor == System::IMU_RGBD)
             mCurrentFrame = Frame(mImGray, imDepth, timestamp, mpORBextractorLeft, mpORBVocabulary, mK, mDistCoef, mbf, mThDepth, mpCamera, &mLastFrame, *mpImuCalib);
 
-        // --- 3. Dynamic object handling ---
-        constexpr float HARD_DROP_THRESHOLD = 0.60f;
-        constexpr int SKIP_FRAMES = 2;
+        // --- 3. Dynamic object handling with DGCM ---
+        // Use configurable thresholds (set in constructor based on config file)
+        const float HARD_DROP_THRESHOLD = mDynamicDropThreshold;
+        const int SKIP_FRAMES = mDynamicSkipFrames;
 
         static int frame_counter = 0;
         static bool first_run = true;
@@ -1718,19 +1757,24 @@ namespace ORB_SLAM3
         if (first_run)
         {
             std::cout << "[TP-DSLAM] RGB-D Mode: Threshold=" << HARD_DROP_THRESHOLD << ", Skip=" << SKIP_FRAMES << std::endl;
+            mbHasLastSemantic = false;
             first_run = false;
         }
 
         bool run_inference = (frame_counter % (SKIP_FRAMES + 1) == 0);
         frame_counter++;
 
-        // Process dynamic prior using unified function
+        // TLSP: Process dynamic prior with pose-guided warping
         cv::Mat inputImg = imGrayOriginal.empty() ? mImGray : imGrayOriginal;
         ProcessDynamicPrior(inputImg, mDynamicPriorMap, run_inference);
 
-        // Filter dynamic keypoints using unified function
+        // DGCM: Compute disparity-gated confidence modulation
         if (!mDynamicPriorMap.empty() && mDynamicPriorMap.size() == mImGray.size())
         {
+            // Apply DGCM to compute confidence scores
+            ComputeDisparityGatedConfidence(mCurrentFrame, mDynamicPriorMap);
+            
+            // Filter dynamic keypoints using DGCM confidence
             FilterDynamicKeypoints(mCurrentFrame, mDynamicPriorMap, HARD_DROP_THRESHOLD);
             RebuildFrameGrid(mCurrentFrame, mImGray);
         }
@@ -1842,9 +1886,10 @@ namespace ORB_SLAM3
         if (mState == NO_IMAGES_YET)
             t0 = timestamp;
 
-        // Dynamic object handling
-        constexpr float HARD_DROP_THRESHOLD = 0.60f;
-        constexpr int SKIP_FRAMES = 2;
+        // Dynamic object handling with DGCM
+        // Use configurable thresholds (set in constructor based on config file)
+        const float HARD_DROP_THRESHOLD = mDynamicDropThreshold;
+        const int SKIP_FRAMES = mDynamicSkipFrames;
 
         static int frame_counter = 0;
         static bool first_run = true;
@@ -1852,25 +1897,29 @@ namespace ORB_SLAM3
         if (first_run)
         {
             std::cout << "[TP-DSLAM] Monocular Mode: Threshold=" << HARD_DROP_THRESHOLD << ", Skip=" << SKIP_FRAMES << std::endl;
+            mbHasLastSemantic = false;
             first_run = false;
         }
 
         bool run_inference = (frame_counter % (SKIP_FRAMES + 1) == 0);
         frame_counter++;
 
-        // Process dynamic prior using unified function
+        // TLSP: Process dynamic prior with pose-guided warping
         ProcessDynamicPrior(mImGray, mDynamicPriorMap, run_inference);
 
-        // Assign dynamic prior to frame
+        // DGCM: Compute disparity-gated confidence modulation
         if (!mDynamicPriorMap.empty() && mDynamicPriorMap.size() == mImGray.size())
+        {
+            ComputeDisparityGatedConfidence(mCurrentFrame, mDynamicPriorMap);
             AssignDynamicPriorToFrame(mCurrentFrame, mDynamicPriorMap);
+        }
         else
         {
             cv::Mat dummyPrior = cv::Mat::zeros(mImGray.size(), CV_32F);
             AssignDynamicPriorToFrame(mCurrentFrame, dummyPrior);
         }
 
-        // Fuse reliability scores
+        // Fuse reliability scores (backup for monocular without disparity)
         FuseReliabilityScores(mCurrentFrame);
 
         mCurrentFrame.mNameFile = filename;
@@ -4498,11 +4547,68 @@ if (mState == LOST) {
     // -------------------------------------------------------------------
     // Unified dynamic prior processing with caching and skip-frame optimization
     // -------------------------------------------------------------------
+    // TLSP: Pose-Guided Semantic Warping Implementation
+    // -------------------------------------------------------------------
+    cv::Mat Tracking::WarpSemanticMap(const cv::Mat &srcSemantic, const Sophus::SE3f &srcPose, 
+                                      const Sophus::SE3f &dstPose, const cv::Mat &depthMap)
+    {
+        if (srcSemantic.empty() || depthMap.empty())
+            return cv::Mat();
+
+        const int H = srcSemantic.rows;
+        const int W = srcSemantic.cols;
+        cv::Mat warped = cv::Mat::zeros(H, W, CV_32F);
+
+        // Compute relative transformation: T_dst_src = T_dst_w * T_w_src
+        Sophus::SE3f Tdst_src = dstPose.inverse() * srcPose;
+        Eigen::Matrix3f R = Tdst_src.rotationMatrix();
+        Eigen::Vector3f t = Tdst_src.translation();
+
+        // Camera intrinsics
+        const float fx = Frame::fx;
+        const float fy = Frame::fy;
+        const float cx = Frame::cx;
+        const float cy = Frame::cy;
+
+        // Warp each pixel from source to destination
+        for (int v = 0; v < H; ++v)
+        {
+            for (int u = 0; u < W; ++u)
+            {
+                float d = depthMap.at<float>(v, u);
+                if (d <= 0.0f || d > 10.0f)  // Skip invalid depth
+                    continue;
+
+                // Back-project to 3D in source camera frame
+                float x = (u - cx) * d / fx;
+                float y = (v - cy) * d / fy;
+                Eigen::Vector3f pt_src(x, y, d);
+
+                // Transform to destination camera frame
+                Eigen::Vector3f pt_dst = R * pt_src + t;
+
+                if (pt_dst.z() <= 0.0f)  // Behind camera
+                    continue;
+
+                // Project to destination image
+                int u_dst = static_cast<int>(fx * pt_dst.x() / pt_dst.z() + cx + 0.5f);
+                int v_dst = static_cast<int>(fy * pt_dst.y() / pt_dst.z() + cy + 0.5f);
+
+                if (u_dst >= 0 && u_dst < W && v_dst >= 0 && v_dst < H)
+                {
+                    // Use max pooling for semantic propagation (conservative)
+                    float src_val = srcSemantic.at<float>(v, u);
+                    float &dst_val = warped.at<float>(v_dst, u_dst);
+                    dst_val = std::max(dst_val, src_val);
+                }
+            }
+        }
+
+        return warped;
+    }
+
     void Tracking::ProcessDynamicPrior(const cv::Mat &inputImg, cv::Mat &dynamicPriorMap, bool runInference)
     {
-        static cv::Mat cached_prior_map;
-        static bool cache_valid = false;
-
         if (mpDynamicDetector == nullptr)
         {
             dynamicPriorMap = cv::Mat::zeros(inputImg.size(), CV_32F);
@@ -4511,6 +4617,7 @@ if (mState == LOST) {
 
         if (runInference)
         {
+            // Perform YOLO inference
             cv::Mat bgrImg;
             if (inputImg.channels() == 1)
                 cv::cvtColor(inputImg, bgrImg, cv::COLOR_GRAY2BGR);
@@ -4525,37 +4632,226 @@ if (mState == LOST) {
 
             if (success && !dynamicPriorMap.empty())
             {
+                // Dynamic potential region expansion (morphological dilation)
                 cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
                 cv::dilate(dynamicPriorMap, dynamicPriorMap, kernel, cv::Point(-1, -1), 2);
 
                 if (dynamicPriorMap.size() != inputImg.size())
                     cv::resize(dynamicPriorMap, dynamicPriorMap, inputImg.size(), 0, 0, cv::INTER_LINEAR);
 
-                dynamicPriorMap.copyTo(cached_prior_map);
-                cache_valid = true;
+                // Cache for TLSP
+                dynamicPriorMap.copyTo(mLastSemanticMap);
+                mLastSemanticPose = mCurrentFrame.GetPose();
+                mbHasLastSemantic = true;
             }
             else
             {
-                if (cache_valid)
-                    cached_prior_map.copyTo(dynamicPriorMap);
+                // Fallback: use warped semantic from last frame
+                if (mbHasLastSemantic && !mLastSemanticMap.empty())
+                {
+                    cv::Mat depthMap = mCurrentFrame.mvDepth.empty() ? cv::Mat() : 
+                        cv::Mat(mCurrentFrame.mvDepth).reshape(1, inputImg.rows);
+                    
+                    if (!depthMap.empty())
+                    {
+                        dynamicPriorMap = WarpSemanticMap(mLastSemanticMap, mLastSemanticPose, 
+                                                          mCurrentFrame.GetPose(), depthMap);
+                        
+                        // Apply dynamic potential region expansion
+                        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+                        cv::dilate(dynamicPriorMap, dynamicPriorMap, kernel, cv::Point(-1, -1), 2);
+                    }
+                    else
+                    {
+                        dynamicPriorMap = cv::Mat::zeros(inputImg.size(), CV_32F);
+                    }
+                }
                 else
+                {
                     dynamicPriorMap = cv::Mat::zeros(inputImg.size(), CV_32F);
+                }
             }
         }
         else
         {
-            if (cache_valid && !cached_prior_map.empty())
+            // TLSP: Warp semantic map from last inference frame to current frame
+            if (mbHasLastSemantic && !mLastSemanticMap.empty())
             {
-                if (cached_prior_map.size() == inputImg.size())
-                    cached_prior_map.copyTo(dynamicPriorMap);
+                cv::Mat depthMap;
+                
+                // Get depth map from frame
+                if (!mCurrentFrame.mvDepth.empty())
+                {
+                    // Create depth image from mvDepth vector
+                    depthMap = cv::Mat(inputImg.size(), CV_32F);
+                    for (int i = 0; i < mCurrentFrame.N && i < (int)mCurrentFrame.mvDepth.size(); ++i)
+                    {
+                        const cv::KeyPoint &kp = mCurrentFrame.mvKeysUn[i];
+                        int x = static_cast<int>(kp.pt.x);
+                        int y = static_cast<int>(kp.pt.y);
+                        if (x >= 0 && x < depthMap.cols && y >= 0 && y < depthMap.rows)
+                        {
+                            depthMap.at<float>(y, x) = mCurrentFrame.mvDepth[i];
+                        }
+                    }
+                    
+                    // Interpolate depth map (simple approach)
+                    cv::Mat validMask = (depthMap > 0.0f) & (depthMap < 10.0f);
+                    if (cv::countNonZero(validMask) > 100)
+                    {
+                        cv::Mat dilatedDepth;
+                        cv::dilate(depthMap, dilatedDepth, cv::Mat::ones(3, 3, CV_32F));
+                        depthMap = dilatedDepth;
+                    }
+                }
+                
+                if (!depthMap.empty() && cv::countNonZero(depthMap > 0) > 50)
+                {
+                    dynamicPriorMap = WarpSemanticMap(mLastSemanticMap, mLastSemanticPose, 
+                                                      mCurrentFrame.GetPose(), depthMap);
+                    
+                    // Apply dynamic potential region expansion
+                    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+                    cv::dilate(dynamicPriorMap, dynamicPriorMap, kernel, cv::Point(-1, -1), 2);
+                }
                 else
-                    cv::resize(cached_prior_map, dynamicPriorMap, inputImg.size(), 0, 0, cv::INTER_LINEAR);
+                {
+                    // No valid depth, use cached map directly
+                    if (mLastSemanticMap.size() == inputImg.size())
+                        mLastSemanticMap.copyTo(dynamicPriorMap);
+                    else
+                        cv::resize(mLastSemanticMap, dynamicPriorMap, inputImg.size());
+                }
             }
             else
             {
                 dynamicPriorMap = cv::Mat::zeros(inputImg.size(), CV_32F);
             }
         }
+    }
+
+    // -------------------------------------------------------------------
+    // DGCM: Sigmoid Disparity Gate Function
+    // -------------------------------------------------------------------
+    float Tracking::SigmoidDisparityGate(float disparity, float d0, float k)
+    {
+        // Sigmoid function: g(d) = 1 / (1 + exp(-k*(d - d0)))
+        // Near field (large disparity): g -> 1, rely more on geometry
+        // Far field (small disparity): g -> 0, rely more on semantics
+        return 1.0f / (1.0f + std::exp(-k * (disparity - d0)));
+    }
+
+    // -------------------------------------------------------------------
+    // DGCM: Disparity-Gated Confidence Modulation
+    // -------------------------------------------------------------------
+    void Tracking::ComputeDisparityGatedConfidence(ORB_SLAM3::Frame &F, const cv::Mat &dynamicPriorMap)
+    {
+        if (dynamicPriorMap.empty())
+            return;
+
+        const int N = F.N;
+        
+        // Ensure vectors are properly sized
+        if (F.mvDynPrior.size() != N) F.mvDynPrior.resize(N, 0.1f);
+        if (F.mvGeoScore.size() != N) F.mvGeoScore.resize(N, 1.0f);
+        if (F.mvStaticReliability.size() != N) F.mvStaticReliability.resize(N, 1.0f);
+
+        const int rows = dynamicPriorMap.rows;
+        const int cols = dynamicPriorMap.cols;
+
+        // Parameters for disparity gating
+        const float disparity_threshold_near = 15.0f;  // Near/far boundary
+        const float disparity_gate_k = 0.3f;           // Sigmoid steepness
+
+        for (int i = 0; i < N; ++i)
+        {
+            const cv::KeyPoint &kp = F.mvKeysUn[i];
+            int x = static_cast<int>(kp.pt.x);
+            int y = static_cast<int>(kp.pt.y);
+
+            // Get semantic dynamic prior
+            float semantic_prior = 0.1f;
+            if (x >= 0 && x < cols && y >= 0 && y < rows)
+            {
+                semantic_prior = dynamicPriorMap.at<float>(y, x);
+            }
+
+            // Compute disparity (for stereo/RGB-D)
+            float disparity = 0.0f;
+            bool has_disparity = false;
+            
+            if (i < (int)F.mvuRight.size() && F.mvuRight[i] >= 0)
+            {
+                // Stereo: disparity = u_left - u_right
+                disparity = kp.pt.x - F.mvuRight[i];
+                has_disparity = true;
+            }
+            else if (i < (int)F.mvDepth.size() && F.mvDepth[i] > 0)
+            {
+                // RGB-D: convert depth to disparity
+                // disparity = bf / depth
+                disparity = mbf / F.mvDepth[i];
+                has_disparity = true;
+            }
+
+            // DGCM: Compute disparity gate weight
+            float geo_weight = 1.0f;  // Default: rely on semantics
+            if (has_disparity && disparity > 0)
+            {
+                // Near field: geo_weight -> 1 (geometry reliable)
+                // Far field: geo_weight -> 0 (semantics more reliable)
+                geo_weight = SigmoidDisparityGate(disparity, disparity_threshold_near, disparity_gate_k);
+            }
+
+            // Compute geometric consistency score (if available from previous processing)
+            float geo_score = 1.0f;
+            if (i < (int)F.mvGeoScore.size())
+                geo_score = F.mvGeoScore[i];
+
+            // DGCM fusion: combine semantic and geometric with disparity gating
+            // static_reliability = (1 - semantic_prior) * [geo_weight * geo_score + (1 - geo_weight)]
+            // Near field: heavily weight geometric score
+            // Far field: rely on (1 - semantic_prior)
+            float fused_score = geo_weight * geo_score + (1.0f - geo_weight) * 1.0f;
+            float reliability = (1.0f - semantic_prior) * fused_score;
+
+            // Clamp to [0, 1]
+            reliability = std::max(0.0f, std::min(1.0f, reliability));
+
+            // Store results
+            F.mvDynPrior[i] = semantic_prior;
+            F.mvGeoScore[i] = geo_score;
+            F.mvStaticReliability[i] = reliability;
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Dynamic Adaptive: Compute Dynamic Ratio
+    // -------------------------------------------------------------------
+    float Tracking::ComputeDynamicRatio(const ORB_SLAM3::Frame &F, float threshold)
+    {
+        int dynamic_count = 0;
+        int total_count = F.N;
+
+        for (int i = 0; i < total_count; ++i)
+        {
+            if (i < (int)F.mvDynPrior.size() && F.mvDynPrior[i] > threshold)
+                dynamic_count++;
+        }
+
+        return total_count > 0 ? static_cast<float>(dynamic_count) / total_count : 0.0f;
+    }
+
+    // -------------------------------------------------------------------
+    // Dynamic Adaptive: Compute Adaptive Huber Delta
+    // -------------------------------------------------------------------
+    float Tracking::ComputeAdaptiveHuberDelta(float dynamicRatio, float baseDelta, float minDelta, float maxDelta)
+    {
+        // Higher dynamic ratio -> more conservative (smaller delta)
+        // Lower dynamic ratio -> more relaxed (larger delta)
+        // Linear interpolation: delta = baseDelta * (1 - dynamicRatio) + minDelta * dynamicRatio
+        float adaptiveDelta = baseDelta * (1.0f - dynamicRatio) + minDelta * dynamicRatio;
+        return std::max(minDelta, std::min(maxDelta, adaptiveDelta));
     }
 
     // -------------------------------------------------------------------

@@ -32,7 +32,7 @@ Stereo.ThDepth: 35.0
 #--------------------------------------------------------------------------------------------
 
 # ORB Extractor: Number of features per image
-ORBextractor.nFeatures: 2000
+ORBextractor.nFeatures: 3000
 
 # ORB Extractor: Scale factor between levels in the scale pyramid 	
 ORBextractor.scaleFactor: 1.2
@@ -46,6 +46,20 @@ ORBextractor.nLevels: 8
 # You can lower these values if your images have low contrast			
 ORBextractor.iniThFAST: 20
 ORBextractor.minThFAST: 7
+
+#--------------------------------------------------------------------------------------------
+# Dynamic Detection Parameters (TP-DSLAM)
+#--------------------------------------------------------------------------------------------
+
+# Threshold for dropping dynamic features (0.0-1.0, lower = more aggressive)
+DynamicDetector.dropThreshold: 0.45
+
+# Skip frames between YOLO inference (higher = faster but less responsive)
+DynamicDetector.skipFrames: 1
+
+# Highway mode: enable more aggressive filtering for highway scenarios
+# 0: disabled (urban/default), 1: enabled (highway/fast motion)
+DynamicDetector.highwayMode: 1
 
 #--------------------------------------------------------------------------------------------
 # Viewer Parameters

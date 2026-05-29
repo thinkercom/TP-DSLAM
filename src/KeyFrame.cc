@@ -93,6 +93,11 @@ KeyFrame::KeyFrame(Frame &F, Map *pMap, KeyFrameDatabase *pKFDB):
     SetPose(F.GetPose());
 
     mnOriginMapId = pMap->GetId();
+
+    // === DGCM: Copy dynamic confidence scores from Frame ===
+    mvDynPrior = F.mvDynPrior;
+    mvGeoScore = F.mvGeoScore;
+    mvStaticReliability = F.mvStaticReliability;
 }
 
 void KeyFrame::ComputeBoW()

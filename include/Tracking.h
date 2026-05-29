@@ -295,6 +295,16 @@ protected:
     // Store dynamic prior map
     cv::Mat mDynamicPriorMap;
 
+    // === Configurable Dynamic Detection Parameters ===
+    float mDynamicDropThreshold;        // Threshold for dropping dynamic features (default: 0.6)
+    int mDynamicSkipFrames;             // Skip frames between YOLO inference (default: 2)
+    bool mHighwayMode;                  // Enable highway mode (more aggressive filtering)
+
+    // === TLSP: Temporal-Semantic Propagation ===
+    cv::Mat mLastSemanticMap;           // Semantic map from last frame
+    Sophus::SE3f mLastSemanticPose;     // Pose when semantic map was computed
+    bool mbHasLastSemantic;             // Flag indicating if we have valid cached semantic
+
     // Dynamic detector pointer
     std::unique_ptr<DynamicDetector> mpDynamicDetector;
 
@@ -400,6 +410,18 @@ private:
     void ApplyPoseSmoothing(ORB_SLAM3::Frame &F, Sophus::SE3f &lastSmoothedTwc, 
                            Eigen::Vector3f &lastLinearVel, Eigen::Vector3f &lastAngularVel,
                            bool &firstSmooth, double dt);
+
+    // === TLSP: Pose-Guided Semantic Warping ===
+    cv::Mat WarpSemanticMap(const cv::Mat &srcSemantic, const Sophus::SE3f &srcPose, 
+                           const Sophus::SE3f &dstPose, const cv::Mat &depthMap);
+    
+    // === DGCM: Disparity-Gated Confidence Modulation ===
+    void ComputeDisparityGatedConfidence(ORB_SLAM3::Frame &F, const cv::Mat &dynamicPriorMap);
+    float SigmoidDisparityGate(float disparity, float d0 = 15.0f, float k = 0.3f);
+
+    // === Dynamic Adaptive Pose Optimization ===
+    float ComputeDynamicRatio(const ORB_SLAM3::Frame &F, float threshold = 0.6f);
+    float ComputeAdaptiveHuberDelta(float dynamicRatio, float baseDelta, float minDelta = 0.5f, float maxDelta = 3.0f);
 };
 
 } //namespace ORB_SLAM

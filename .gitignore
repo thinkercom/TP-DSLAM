@@ -6,6 +6,8 @@
 
 # Unignore all dirs
 !*/
+evaluation_results
+Vocabulary/ORBvoc.txt
 
 CMakeLists.txt.user
 CMakeLists_modified.txt

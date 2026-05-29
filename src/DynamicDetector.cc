@@ -230,11 +230,11 @@ DynamicDetector::DynamicDetector(const std::string &model_path,
 
     class_dyn_prior_ = {
         {0, 0.95f},  // person
-        {1, 0.75f},  // bicycle
-        {2, 0.70f},  // car
-        {3, 0.80f},  // motorcycle
-        {5, 0.70f},  // bus
-        {7, 0.70f},  // truck
+        {1, 0.80f},  // bicycle (increased for highway)
+        {2, 0.85f},  // car (increased - highway vehicles are usually moving)
+        {3, 0.85f},  // motorcycle (increased)
+        {5, 0.85f},  // bus (increased)
+        {7, 0.85f},  // truck (increased - highway trucks are usually moving)
         {15, 0.90f}, // cat
         {16, 0.90f}, // dog
         {17, 0.85f}, // horse

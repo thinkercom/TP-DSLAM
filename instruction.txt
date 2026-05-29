@@ -1,0 +1,6 @@
+TUM
+./Examples/RGB-D/rgbd_tum Vocabulary/ORBvoc.txt Examples/RGB-D/TUM3.yaml ../datasets/TUM/fr3_walking_halfsphere/ ../datasets/TUM/fr3_walking_halfsphere/associate.txt
+./scripts/eval_ape.sh ../datasets/TUM/fr3_walking_xyz/groundtruth.txt ./CameraTrajectory.txt
+
+KITTI
+./Examples/Stereo/stereo_kitti Vocabulary/ORBvoc.txt Examples/Stereo/KITTI00-02.yaml ../datasets/KITTI/00/
