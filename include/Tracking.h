@@ -393,6 +393,9 @@ protected:
 
 public:
     cv::Mat mImRight;
+    
+    // === Performance Monitoring ===
+    double mLastProcessingTimeMs = 0.0;  // Last frame processing time in ms
 
     // === Thread stop control ===
     void RequestStop();

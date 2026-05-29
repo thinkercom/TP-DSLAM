@@ -8,6 +8,9 @@
 !*/
 evaluation_results
 Vocabulary/ORBvoc.txt
+MapPoints.pcd
+ORB-SLAM3_An_Accurate_Open-Source_Library_for_Visual_VisualInertial_and_Multimap_SLAM.pdf
+samplepaper.pdf
 
 CMakeLists.txt.user
 CMakeLists_modified.txt

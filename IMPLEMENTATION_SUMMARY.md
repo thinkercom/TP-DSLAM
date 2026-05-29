@@ -298,6 +298,87 @@ cd /home/cmt/Projects/1-TP-DSLAM/TP-DSLAM
 
 ---
 
+## 6. FPS Calculation Refactoring (New)
+
+### Problem
+Original FPS calculation had several issues:
+- `stereo_kitti.cc`: Measurement included `usleep` wait time, causing FPS to be underestimated
+- `Tracking.cc`: Redundant FPS statistics with high overhead (system calls for memory/GPU)
+- Two FPS concepts were confusing (Processing FPS vs System FPS)
+
+### Solution Implemented
+
+#### 6.1 Corrected Measurement Range (`stereo_kitti.cc`, `rgbd_tum.cc`)
+
+**Before (Incorrect):**
+```cpp
+t_frame_start = now();  // Start
+// ... process frame ...
+usleep(wait_time);       // Wait (should NOT be counted!)
+t_frame_end = now();    // End (includes wait!)
+```
+
+**After (Correct):**
+```cpp
+t_start = now();        // Start
+// ... process frame ...
+t_end = now();          // End (excludes wait)
+// ... usleep after measurement ...
+```
+
+#### 6.2 Two Types of FPS
+
+| FPS Type | Formula | Description |
+|----------|---------|-------------|
+| **Processing FPS** | `1000 / mean_processing_time_ms` | Algorithm actual speed |
+| **System FPS** | `(nFrames - 1) / dataset_duration` | Dataset constrained rate |
+
+#### 6.3 Detailed Statistics Output
+
+New output format:
+```
+====================================================================
+                    PERFORMANCE STATISTICS                          
+====================================================================
+
+--- Processing Time (SLAM Algorithm Only) ---
+  Mean:     45.23 ms
+  Median:   42.15 ms
+  Std Dev:  8.67 ms
+  Min:      35.12 ms
+  Max:      89.45 ms
+  P95:      62.33 ms
+  P99:      78.91 ms
+
+--- FPS Statistics ---
+  Processing FPS (Mean):   22.11 fps
+  Processing FPS (Median): 23.73 fps
+  System FPS (Dataset):    10.00 fps
+
+--- Real-time Capability ---
+  Status: REAL-TIME CAPABLE (mean processing time < 1/dataset_fps)
+  P99 Latency: MEETS DEADLINE
+
+--- Memory Usage ---
+  Peak RAM: 1234.56 MB
+
+====================================================================
+```
+
+#### 6.4 Reduced Overhead in Tracking.cc
+
+**Before:** Every 100 frames, called `getrusage()` and `nvidia-smi` (high overhead)
+
+**After:** Only record start/end time, statistics calculated in main program
+
+### Files Modified
+- `Examples/Stereo/stereo_kitti.cc` - Corrected measurement, added detailed stats
+- `Examples/RGB-D/rgbd_tum.cc` - Added detailed stats
+- `src/Tracking.cc` - Simplified FPS monitoring, reduced overhead
+- `include/Tracking.h` - Added `mLastProcessingTimeMs` member
+
+---
+
 ## Future Improvements
 
 1. **TLSP Enhancement**:
